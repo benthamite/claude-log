@@ -169,8 +169,11 @@ search string.  INITIAL is the optional initial input."
 
 (declare-function consult--grep "consult")
 (declare-function consult--grep-state "consult")
+(declare-function consult--grep-format "consult")
 (declare-function consult--ripgrep-make-builder "consult")
+(declare-function consult--async-transform-by-input "consult")
 (defvar consult-ripgrep-args)
+(defvar consult--grep-match-regexp)
 
 (defun claude-log--search-with-consult (&optional initial)
   "Search sessions incrementally using consult and ripgrep.
@@ -178,7 +181,9 @@ INITIAL is the optional initial input."
   (let* ((dir (expand-file-name "projects" claude-log-directory))
          (match
           (cl-letf (((symbol-function 'consult--grep-state)
-                     (lambda () (lambda (_action _cand)))))
+                     (lambda () (lambda (_action _cand))))
+                    ((symbol-function 'consult--grep-format)
+                     #'claude-log--grep-format))
             (consult--grep "Search sessions"
                            #'claude-log--consult-ripgrep-builder
                            dir initial))))
@@ -187,17 +192,68 @@ INITIAL is the optional initial input."
 
 (defun claude-log--consult-ripgrep-builder (paths)
   "Build a ripgrep command restricted to JSONL files in PATHS.
-Limits to one match per file to reduce noise."
+Limits to one match per file and shows truncated previews."
   (let ((consult-ripgrep-args
          (concat consult-ripgrep-args
-                 " --glob=*.jsonl --max-count=1 --max-columns=200")))
+                 " --glob=*.jsonl --max-count=1"
+                 " --max-columns=500 --max-columns-preview")))
     (consult--ripgrep-make-builder paths)))
+
+(defun claude-log--grep-format (builder)
+  "Return a transform function that formats grep results.
+Replaces encoded file paths with readable project names.
+BUILDER is the command line builder function."
+  (consult--async-transform-by-input
+   (lambda (input)
+     (let ((highlight (cdr (funcall builder input))))
+       (lambda (cands)
+         (claude-log--format-grep-candidates cands highlight))))))
+
+(defun claude-log--format-grep-candidates (cands highlight)
+  "Format CANDS from raw ripgrep output into readable candidates.
+HIGHLIGHT is the match highlight function."
+  (let (result)
+    (save-match-data
+      (dolist (str cands (nreverse result))
+        (when (string-match consult--grep-match-regexp str)
+          (let* ((file (match-string 1 str))
+                 (line (match-string 2 str))
+                 (content (substring str (match-end 0)))
+                 (project (claude-log--project-from-path file))
+                 (formatted (concat project ":" line ":" content))
+                 (plen (length project))
+                 (llen (length line)))
+            (when highlight
+              (funcall highlight content))
+            (add-text-properties
+             0 plen
+             `(face consult-file consult--prefix-group ,project)
+             formatted)
+            (put-text-property
+             (1+ plen) (+ 1 plen llen)
+             'face 'consult-line-number formatted)
+            (put-text-property
+             0 (length formatted) 'claude-log--file file formatted)
+            (push formatted result)))))))
+
+(defun claude-log--project-from-path (path)
+  "Extract a readable project name from encoded grep PATH.
+PATH looks like `-Users-foo-repos-project/uuid.jsonl'."
+  (let ((dir (directory-file-name (or (file-name-directory path) path))))
+    (cond
+     ((string-match ".*-repos-\\(.+\\)" dir)
+      (match-string 1 dir))
+     ((string-match "-\\([^/]+\\)\\'" dir)
+      (match-string 1 dir))
+     (t dir))))
 
 (defun claude-log--open-grep-match (match dir)
   "Extract the file path from consult grep MATCH and open it.
 DIR is the base directory that paths are relative to."
-  (let* ((file-end (next-single-property-change 0 'face match))
-         (file (substring-no-properties match 0 file-end)))
+  (let ((file (or (get-text-property 0 'claude-log--file match)
+                  (substring-no-properties
+                   match 0
+                   (next-single-property-change 0 'face match)))))
     (claude-log-open-file (expand-file-name file dir))))
 
 ;;;;; Session search (fallback)
