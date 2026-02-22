@@ -157,8 +157,8 @@ flycheck's global-mode hook to prevent unwanted side effects."
 ;;;###autoload
 (defun claude-log-search-sessions (query)
   "Search across all sessions for QUERY and open a matching one.
-Uses `grep' to efficiently search JSONL files, then presents
-matching sessions for selection."
+Uses ripgrep to search JSONL files, then presents matching
+sessions for selection."
   (interactive "sSearch sessions: ")
   (let* ((matching-files (claude-log--grep-session-files query))
          (sessions (claude-log--read-sessions))
@@ -176,21 +176,20 @@ matching sessions for selection."
 (defun claude-log--grep-session-files (query)
   "Return a list of JSONL file paths containing QUERY."
   (let* ((projects-dir (expand-file-name "projects" claude-log-directory))
-         (default-directory projects-dir)
-         (output (claude-log--run-grep query projects-dir)))
-    (claude-log--parse-grep-output output)))
+         (output (claude-log--run-ripgrep query projects-dir)))
+    (split-string output "\n" t)))
 
-(defun claude-log--run-grep (query dir)
-  "Run grep for QUERY across JSONL files in DIR, returning stdout."
+(defun claude-log--run-ripgrep (query dir)
+  "Search for QUERY across JSONL files in DIR using ripgrep.
+Returns stdout as a string of newline-separated file paths."
+  (unless (executable-find "rg")
+    (user-error "ripgrep (rg) is required for session search"))
   (with-temp-buffer
-    (call-process "grep" nil t nil
-                  "-rlF" "-i" "--include=*.jsonl" query dir)
+    (call-process "rg" nil t nil
+                  "--files-with-matches" "--fixed-strings"
+                  "--ignore-case" "--glob" "*.jsonl"
+                  query dir)
     (buffer-string)))
-
-(defun claude-log--parse-grep-output (output)
-  "Parse grep OUTPUT into a list of absolute file paths."
-  (seq-filter (lambda (s) (not (string-empty-p s)))
-              (split-string output "\n" t)))
 
 (defun claude-log--filter-sessions-by-files (sessions files)
   "Filter SESSIONS to those whose file appears in FILES."
