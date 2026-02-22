@@ -27,13 +27,13 @@
 
 ;; Browse and render Claude Code conversation logs stored as JSONL files.
 ;; Maintains a mirror directory of pre-rendered Markdown files so that
-;; standard tools (consult-ripgrep, dired, grep) work natively on
+;; standard tools (consult-ripgrep, Dired, grep) work natively on
 ;; readable content.
 ;;
 ;; Entry points:
 ;;   `claude-log-browse-sessions'        - pick a session from history
 ;;   `claude-log-open-latest'            - open the most recent session
-;;   `claude-log-open-rendered-directory' - browse rendered files in dired
+;;   `claude-log-open-rendered-directory' - browse rendered files in Dired
 ;;   `claude-log-sync-all'               - render all unrendered/stale sessions
 ;;   `claude-log-open-file'              - open a specific JSONL file
 
@@ -185,7 +185,7 @@ a project, then for a session within that project."
 
 ;;;###autoload
 (defun claude-log-open-rendered-directory ()
-  "Open the rendered Markdown directory in dired."
+  "Open the rendered Markdown directory in Dired."
   (interactive)
   (let ((dir (expand-file-name claude-log-rendered-directory)))
     (unless (file-directory-p dir)
