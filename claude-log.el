@@ -681,14 +681,12 @@ Returns a list of formatted strings, or nil if there is no text."
 
 (defun claude-log--collect-tool-results (content)
   "Collect tool result parts from user CONTENT array.
-Returns a list of formatted strings, or nil if there are none or
-`claude-log-show-tools' is `hidden'."
-  (when (not (eq claude-log-show-tools 'hidden))
-    (let (parts)
-      (dolist (item content)
-        (when (equal (plist-get item :type) "tool_result")
-          (push (claude-log--render-tool-result item) parts)))
-      (nreverse parts))))
+Returns a list of formatted strings, or nil if there are none."
+  (let (parts)
+    (dolist (item content)
+      (when (equal (plist-get item :type) "tool_result")
+        (push (claude-log--render-tool-result item) parts)))
+    (nreverse parts)))
 
 (defun claude-log--render-assistant-turn (content time-str)
   "Render an assistant turn with CONTENT and TIME-STR.
@@ -706,15 +704,13 @@ Returns an empty string if CONTENT produces no visible output."
         (let ((item-type (plist-get item :type)))
           (cond
            ((equal item-type "thinking")
-            (when (not (eq claude-log-show-thinking 'hidden))
-              (push (claude-log--render-thinking item) parts)))
+            (push (claude-log--render-thinking item) parts))
            ((equal item-type "text")
             (let ((text (plist-get item :text)))
               (when (and text (not (string-empty-p (string-trim text))))
                 (push (format "%s\n\n" text) parts))))
            ((equal item-type "tool_use")
-            (when (not (eq claude-log-show-tools 'hidden))
-              (push (claude-log--render-tool-use item) parts)))))))
+            (push (claude-log--render-tool-use item) parts))))))
     (apply #'concat (nreverse parts))))
 
 (defun claude-log--render-thinking (item)
@@ -1022,14 +1018,17 @@ Returns the position, or nil."
   "Expand all sections."
   (interactive)
   (let ((inhibit-read-only t))
-    (outline-show-all)))
+    (outline-show-all)
+    (claude-log--remove-hidden-overlays)))
 
 (defun claude-log--collapse-as-configured ()
-  "Collapse sections per `claude-log-show-thinking' and `claude-log-show-tools'."
-  (when (eq claude-log-show-thinking 'collapsed)
-    (claude-log--collapse-headings-matching "^#### Thinking$"))
-  (when (eq claude-log-show-tools 'collapsed)
-    (claude-log--collapse-headings-matching "^#### Tool")))
+  "Collapse or hide sections per user configuration."
+  (pcase claude-log-show-thinking
+    ('collapsed (claude-log--collapse-headings-matching "^#### Thinking$"))
+    ('hidden (claude-log--hide-sections-matching "^#### Thinking$")))
+  (pcase claude-log-show-tools
+    ('collapsed (claude-log--collapse-headings-matching "^#### Tool"))
+    ('hidden (claude-log--hide-sections-matching "^#### Tool"))))
 
 (defun claude-log--collapse-headings-matching (regexp)
   "Collapse all outline headings matching REGEXP in the buffer."
@@ -1041,11 +1040,13 @@ Returns the position, or nil."
       (forward-line 1))))
 
 (defun claude-log--collapse-region (start end)
-  "Collapse sections between START and END according to configuration."
-  (when (eq claude-log-show-thinking 'collapsed)
-    (claude-log--collapse-headings-in-region "^#### Thinking$" start end))
-  (when (eq claude-log-show-tools 'collapsed)
-    (claude-log--collapse-headings-in-region "^#### Tool" start end)))
+  "Collapse or hide sections between START and END according to configuration."
+  (pcase claude-log-show-thinking
+    ('collapsed (claude-log--collapse-headings-in-region "^#### Thinking$" start end))
+    ('hidden (claude-log--hide-sections-in-region "^#### Thinking$" start end)))
+  (pcase claude-log-show-tools
+    ('collapsed (claude-log--collapse-headings-in-region "^#### Tool" start end))
+    ('hidden (claude-log--hide-sections-in-region "^#### Tool" start end))))
 
 (defun claude-log--collapse-headings-in-region (regexp start end)
   "Collapse outline headings matching REGEXP between START and END."
@@ -1055,6 +1056,50 @@ Returns the position, or nil."
       (goto-char (match-beginning 0))
       (outline-hide-subtree)
       (forward-line 1))))
+
+(defun claude-log--hide-sections-matching (regexp)
+  "Completely hide all sections matching REGEXP using invisible overlays.
+Hides both the heading and its body, unlike `outline-hide-subtree'
+which only hides the body."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((heading-re (concat "^\\(?:" outline-regexp "\\)")))
+      (while (re-search-forward regexp nil t)
+        (let* ((start (match-beginning 0))
+               (end (save-excursion
+                      (goto-char start)
+                      (forward-line 1)
+                      (if (re-search-forward heading-re nil t)
+                          (match-beginning 0)
+                        (point-max)))))
+          (let ((ov (make-overlay start end)))
+            (overlay-put ov 'invisible t)
+            (overlay-put ov 'claude-log-hidden t))
+          (goto-char end))))))
+
+(defun claude-log--hide-sections-in-region (regexp start end)
+  "Completely hide sections matching REGEXP between START and END."
+  (save-excursion
+    (goto-char start)
+    (let ((heading-re (concat "^\\(?:" outline-regexp "\\)")))
+      (while (re-search-forward regexp end t)
+        (let* ((sec-start (match-beginning 0))
+               (sec-end (save-excursion
+                          (goto-char sec-start)
+                          (forward-line 1)
+                          (if (re-search-forward heading-re nil t)
+                              (match-beginning 0)
+                            (point-max)))))
+          (let ((ov (make-overlay sec-start sec-end)))
+            (overlay-put ov 'invisible t)
+            (overlay-put ov 'claude-log-hidden t))
+          (goto-char sec-end))))))
+
+(defun claude-log--remove-hidden-overlays ()
+  "Remove all `claude-log-hidden' overlays from the current buffer."
+  (dolist (ov (overlays-in (point-min) (point-max)))
+    (when (overlay-get ov 'claude-log-hidden)
+      (delete-overlay ov))))
 
 (defun claude-log-refresh ()
   "Re-render from JSONL source and reload buffer."
