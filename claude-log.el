@@ -92,6 +92,10 @@ When non-nil, `claude-log-browse-sessions' first prompts for a
 project, then for a session within that project."
   :type 'boolean)
 
+(defcustom claude-log-display-width 60
+  "Maximum width of the first-message column in the session browser."
+  :type 'integer)
+
 ;;;;; Internal variables
 
 (defvar-local claude-log--source-file nil
@@ -240,7 +244,7 @@ Each value is a plist (:display :timestamp :project :file)."
 (defun claude-log--browse-flat (sessions)
   "Present all SESSIONS in a single `completing-read'."
   (let* ((candidates (claude-log--build-candidates sessions))
-         (selected (completing-read "Session: " candidates nil t))
+         (selected (claude-log--completing-read "Session: " candidates))
          (file (alist-get selected candidates nil nil #'equal)))
     (claude-log-open-file file)))
 
@@ -248,12 +252,18 @@ Each value is a plist (:display :timestamp :project :file)."
   "Present SESSIONS grouped by project: first pick project, then session."
   (let* ((grouped (claude-log--group-by-project sessions))
          (project-names (mapcar #'car grouped))
-         (project (completing-read "Project: " project-names nil t))
+         (project (claude-log--completing-read "Project: " project-names))
          (project-sessions (alist-get project grouped nil nil #'equal))
          (candidates (claude-log--build-candidates project-sessions))
-         (selected (completing-read "Session: " candidates nil t))
+         (selected (claude-log--completing-read "Session: " candidates))
          (file (alist-get selected candidates nil nil #'equal)))
     (claude-log-open-file file)))
+
+(defun claude-log--completing-read (prompt collection)
+  "Read from COLLECTION with PROMPT, preserving display order."
+  (completing-read prompt
+                   (claude-log--preserve-order-table collection)
+                   nil t))
 
 (defun claude-log--group-by-project (sessions)
   "Group SESSIONS into an alist of (project-name . sessions).
@@ -282,7 +292,7 @@ Projects are sorted by most recent session timestamp."
             (date (claude-log--format-epoch-ms ts))
             (project (claude-log--short-project (plist-get meta :project)))
             (display (string-trim (plist-get meta :display)))
-            (display (claude-log--truncate-string display 60))
+            (display (claude-log--truncate-string display claude-log-display-width))
             (label (format "%s  %-20s  \"%s\"" date project display)))
        (cons label (plist-get meta :file))))
    sessions))
@@ -599,6 +609,15 @@ Returns an empty string if CONTENT produces no visible output."
     (error ts)))
 
 ;;;;; Utilities
+
+(defun claude-log--preserve-order-table (collection)
+  "Wrap COLLECTION in a completion table that preserves display order.
+COLLECTION is a list of strings or an alist of (string . value)."
+  (lambda (string pred action)
+    (if (eq action 'metadata)
+        '(metadata (display-sort-function . identity)
+                   (cycle-sort-function . identity))
+      (complete-with-action action collection string pred))))
 
 (defun claude-log--truncate-string (str max)
   "Truncate STR to MAX characters, appending ellipsis if needed."
