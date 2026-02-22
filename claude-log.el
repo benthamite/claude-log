@@ -155,11 +155,52 @@ flycheck's global-mode hook to prevent unwanted side effects."
     (claude-log-mode)))
 
 ;;;###autoload
-(defun claude-log-search-sessions (query)
-  "Search across all sessions for QUERY and open a matching one.
-Uses ripgrep to search JSONL files, then presents matching
-sessions for selection."
-  (interactive "sSearch sessions: ")
+(defun claude-log-search-sessions (&optional initial)
+  "Search across all sessions and open a matching one.
+When `consult' is available, search incrementally with ripgrep
+showing matching lines in context.  Otherwise, prompt for a
+search string.  INITIAL is the optional initial input."
+  (interactive)
+  (if (require 'consult nil t)
+      (claude-log--search-with-consult initial)
+    (claude-log--search-with-rg (read-string "Search sessions: "))))
+
+;;;;; Session search (consult)
+
+(declare-function consult--grep "consult")
+(declare-function consult--grep-state "consult")
+(declare-function consult--ripgrep-make-builder "consult")
+(defvar consult-ripgrep-args)
+
+(defun claude-log--search-with-consult (&optional initial)
+  "Search sessions incrementally using consult and ripgrep.
+INITIAL is the optional initial input."
+  (let* ((dir (expand-file-name "projects" claude-log-directory))
+         (match
+          (cl-letf (((symbol-function 'consult--grep-state)
+                     (lambda () (lambda (_action _cand)))))
+            (consult--grep "Search sessions"
+                           #'claude-log--consult-ripgrep-builder
+                           dir initial))))
+    (when match
+      (claude-log--open-grep-match match))))
+
+(defun claude-log--consult-ripgrep-builder (paths)
+  "Build a ripgrep command restricted to JSONL files in PATHS."
+  (let ((consult-ripgrep-args
+         (concat consult-ripgrep-args " --glob=*.jsonl")))
+    (consult--ripgrep-make-builder paths)))
+
+(defun claude-log--open-grep-match (match)
+  "Extract the file path from consult grep MATCH and open it."
+  (let* ((file-end (next-single-property-change 0 'face match))
+         (file (substring-no-properties match 0 file-end)))
+    (claude-log-open-file file)))
+
+;;;;; Session search (fallback)
+
+(defun claude-log--search-with-rg (query)
+  "Search sessions matching QUERY and present for selection."
   (let* ((matching-files (claude-log--grep-session-files query))
          (sessions (claude-log--read-sessions))
          (matching-sessions (claude-log--filter-sessions-by-files
@@ -170,8 +211,6 @@ sessions for selection."
     (if claude-log-group-by-project
         (claude-log--browse-grouped matching-sessions)
       (claude-log--browse-flat matching-sessions))))
-
-;;;;; Session search
 
 (defun claude-log--grep-session-files (query)
   "Return a list of JSONL file paths containing QUERY."
