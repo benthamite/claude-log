@@ -183,19 +183,22 @@ INITIAL is the optional initial input."
                            #'claude-log--consult-ripgrep-builder
                            dir initial))))
     (when match
-      (claude-log--open-grep-match match))))
+      (claude-log--open-grep-match match dir))))
 
 (defun claude-log--consult-ripgrep-builder (paths)
-  "Build a ripgrep command restricted to JSONL files in PATHS."
+  "Build a ripgrep command restricted to JSONL files in PATHS.
+Limits to one match per file to reduce noise."
   (let ((consult-ripgrep-args
-         (concat consult-ripgrep-args " --glob=*.jsonl")))
+         (concat consult-ripgrep-args
+                 " --glob=*.jsonl --max-count=1 --max-columns=200")))
     (consult--ripgrep-make-builder paths)))
 
-(defun claude-log--open-grep-match (match)
-  "Extract the file path from consult grep MATCH and open it."
+(defun claude-log--open-grep-match (match dir)
+  "Extract the file path from consult grep MATCH and open it.
+DIR is the base directory that paths are relative to."
   (let* ((file-end (next-single-property-change 0 'face match))
          (file (substring-no-properties match 0 file-end)))
-    (claude-log-open-file file)))
+    (claude-log-open-file (expand-file-name file dir))))
 
 ;;;;; Session search (fallback)
 
