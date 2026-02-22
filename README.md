@@ -103,8 +103,7 @@ Opens a specific JSONL file by path. Useful for automation or when you know the 
 |------------------------------------|-----------------|------------------------------------------------------------------|
 | `claude-log-directory`             | `"~/.claude"`   | Root directory of Claude Code configuration                      |
 | `claude-log-show-thinking`         | `collapsed`     | How to display thinking blocks: `hidden`, `collapsed`, `visible` |
-| `claude-log-show-tool-output`      | `t`             | Whether to show tool result content in user turns                |
-| `claude-log-collapse-tools`        | `t`             | Auto-fold tool and thinking sections after rendering             |
+| `claude-log-show-tools`            | `collapsed`     | How to display tool sections: `hidden`, `collapsed`, `visible`   |
 | `claude-log-timestamp-format`      | `"%Y-%m-%d %H:%M:%S"` | Format string for timestamps                              |
 | `claude-log-max-tool-input-length` | `200`           | Max characters for tool input summaries                          |
 | `claude-log-max-tool-result-length`| `500`           | Max characters for tool result content                           |

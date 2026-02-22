@@ -62,13 +62,13 @@ a heading, `visible' shows them expanded."
                  (const :tag "Collapsed" collapsed)
                  (const :tag "Visible" visible)))
 
-(defcustom claude-log-show-tool-output t
-  "Whether to show tool result content in user turns."
-  :type 'boolean)
-
-(defcustom claude-log-collapse-tools t
-  "Whether to auto-fold tool and thinking sections after rendering."
-  :type 'boolean)
+(defcustom claude-log-show-tools 'collapsed
+  "How to display tool-use and tool-result sections.
+`hidden' omits them entirely, `collapsed' shows them folded under
+a heading, `visible' shows them expanded."
+  :type '(choice (const :tag "Hidden" hidden)
+                 (const :tag "Collapsed" collapsed)
+                 (const :tag "Visible" visible)))
 
 (defcustom claude-log-timestamp-format "%Y-%m-%d %H:%M:%S"
   "Format string for timestamps in rendered output."
@@ -469,8 +469,7 @@ known system XML tag."
         (insert (claude-log--render-entry entry)))
       (claude-log--record-offset)
       (goto-char (point-min))
-      (when claude-log-collapse-tools
-        (claude-log-collapse-all-tools)))))
+      (claude-log--collapse-as-configured))))
 
 (defun claude-log--extract-session-metadata (entries)
   "Extract project and date from ENTRIES."
@@ -541,8 +540,8 @@ Returns a list of formatted strings, or nil if there is no text."
 (defun claude-log--collect-tool-results (content)
   "Collect tool result parts from user CONTENT array.
 Returns a list of formatted strings, or nil if there are none or
-`claude-log-show-tool-output' is nil."
-  (when claude-log-show-tool-output
+`claude-log-show-tools' is `hidden'."
+  (when (not (eq claude-log-show-tools 'hidden))
     (let (parts)
       (dolist (item content)
         (when (equal (plist-get item :type) "tool_result")
@@ -572,7 +571,8 @@ Returns an empty string if CONTENT produces no visible output."
               (when (and text (not (string-empty-p (string-trim text))))
                 (push (format "%s\n\n" text) parts))))
            ((equal item-type "tool_use")
-            (push (claude-log--render-tool-use item) parts))))))
+            (when (not (eq claude-log-show-tools 'hidden))
+              (push (claude-log--render-tool-use item) parts)))))))
     (apply #'concat (nreverse parts))))
 
 (defun claude-log--render-thinking (item)
@@ -816,18 +816,19 @@ If AT-END is non-nil, scroll to show new content."
 
 (defun claude-log--append-rendered-line (line)
   "Parse LINE as JSON and append its rendering if it is a conversation entry."
-  (condition-case nil
-      (let ((entry (claude-log--parse-json-line line)))
-        (when (claude-log--conversation-entry-p entry)
-          (let ((rendered (claude-log--render-entry entry))
-                (inhibit-read-only t))
-            (save-excursion
-              (goto-char (point-max))
-              (insert rendered)
-              (when claude-log-collapse-tools
-                (claude-log--collapse-region
-                 (- (point-max) (length rendered)) (point-max)))))))
-    (error nil)))
+  (when-let* ((entry (claude-log--try-parse-json line)))
+    (when (claude-log--conversation-entry-p entry)
+      (let ((rendered (claude-log--render-entry entry))
+            (inhibit-read-only t))
+        (save-excursion
+          (goto-char (point-max))
+          (insert rendered)
+          (claude-log--collapse-region
+           (- (point-max) (length rendered)) (point-max)))))))
+
+(defun claude-log--try-parse-json (line)
+  "Parse LINE as JSON, returning nil if it is not valid JSON."
+  (ignore-errors (claude-log--parse-json-line line)))
 
 ;;;;; Navigation commands
 
@@ -868,7 +869,7 @@ Returns the position, or nil."
 (defun claude-log-collapse-all-tools ()
   "Collapse all tool-use, tool-result, and thinking sections."
   (interactive)
-  (claude-log--set-subheading-visibility t))
+  (claude-log--collapse-headings-matching "^####+ "))
 
 (defun claude-log-expand-all ()
   "Expand all sections."
@@ -876,22 +877,34 @@ Returns the position, or nil."
   (let ((inhibit-read-only t))
     (outline-show-all)))
 
-(defun claude-log--set-subheading-visibility (hide)
-  "HIDE or show all `####' level subheadings."
+(defun claude-log--collapse-as-configured ()
+  "Collapse sections per `claude-log-show-thinking' and `claude-log-show-tools'."
+  (when (eq claude-log-show-thinking 'collapsed)
+    (claude-log--collapse-headings-matching "^#### Thinking$"))
+  (when (eq claude-log-show-tools 'collapsed)
+    (claude-log--collapse-headings-matching "^#### Tool")))
+
+(defun claude-log--collapse-headings-matching (regexp)
+  "Collapse all outline headings matching REGEXP in the buffer."
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward "^####+ " nil t)
+    (while (re-search-forward regexp nil t)
       (goto-char (match-beginning 0))
-      (if hide
-          (outline-hide-subtree)
-        (outline-show-subtree))
+      (outline-hide-subtree)
       (forward-line 1))))
 
 (defun claude-log--collapse-region (start end)
-  "Collapse all `####' subheadings between START and END."
+  "Collapse sections between START and END according to configuration."
+  (when (eq claude-log-show-thinking 'collapsed)
+    (claude-log--collapse-headings-in-region "^#### Thinking$" start end))
+  (when (eq claude-log-show-tools 'collapsed)
+    (claude-log--collapse-headings-in-region "^#### Tool" start end)))
+
+(defun claude-log--collapse-headings-in-region (regexp start end)
+  "Collapse outline headings matching REGEXP between START and END."
   (save-excursion
     (goto-char start)
-    (while (re-search-forward "^####+ " end t)
+    (while (re-search-forward regexp end t)
       (goto-char (match-beginning 0))
       (outline-hide-subtree)
       (forward-line 1))))
