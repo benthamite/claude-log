@@ -179,11 +179,13 @@ search string.  INITIAL is the optional initial input."
   "Search sessions incrementally using consult and ripgrep.
 INITIAL is the optional initial input."
   (let* ((dir (expand-file-name "projects" claude-log-directory))
+         (date-index (claude-log--build-session-date-index))
          (match
           (cl-letf (((symbol-function 'consult--grep-state)
                      (lambda () (lambda (_action _cand))))
                     ((symbol-function 'consult--grep-format)
-                     #'claude-log--grep-format))
+                     (lambda (builder)
+                       (claude-log--grep-format builder date-index))))
             (consult--grep "Search sessions"
                            #'claude-log--consult-ripgrep-builder
                            dir initial))))
@@ -192,49 +194,106 @@ INITIAL is the optional initial input."
 
 (defun claude-log--consult-ripgrep-builder (paths)
   "Build a ripgrep command restricted to JSONL files in PATHS.
-Limits to one match per file and shows truncated previews."
+Limits to one match per file."
   (let ((consult-ripgrep-args
          (concat consult-ripgrep-args
-                 " --glob=*.jsonl --max-count=1"
-                 " --max-columns=500 --max-columns-preview")))
+                 " --glob=*.jsonl --max-count=1")))
     (consult--ripgrep-make-builder paths)))
 
-(defun claude-log--grep-format (builder)
+(defun claude-log--grep-format (builder date-index)
   "Return a transform function that formats grep results.
-Replaces encoded file paths with readable project names.
-BUILDER is the command line builder function."
+Extracts readable snippets from JSON and adds project/date headers.
+BUILDER is the command line builder function.
+DATE-INDEX maps session IDs to formatted date strings."
   (consult--async-transform-by-input
    (lambda (input)
      (let ((highlight (cdr (funcall builder input))))
        (lambda (cands)
-         (claude-log--format-grep-candidates cands highlight))))))
+         (claude-log--format-grep-candidates
+          cands highlight date-index))))))
 
-(defun claude-log--format-grep-candidates (cands highlight)
+(defun claude-log--format-grep-candidates (cands highlight date-index)
   "Format CANDS from raw ripgrep output into readable candidates.
-HIGHLIGHT is the match highlight function."
+HIGHLIGHT is the match highlight function.
+DATE-INDEX maps session IDs to formatted date strings."
   (let (result)
     (save-match-data
       (dolist (str cands (nreverse result))
         (when (string-match consult--grep-match-regexp str)
           (let* ((file (match-string 1 str))
-                 (line (match-string 2 str))
-                 (content (substring str (match-end 0)))
+                 (raw-content (substring str (match-end 0)))
                  (project (claude-log--project-from-path file))
-                 (formatted (concat project ":" line ":" content))
-                 (plen (length project))
-                 (llen (length line)))
+                 (date (claude-log--session-date-from-path
+                        file date-index))
+                 (group (format "%s — %s" project date))
+                 (snippet (claude-log--extract-snippet raw-content))
+                 (formatted (concat group ":0:" snippet))
+                 (glen (length group)))
             (when highlight
-              (funcall highlight content))
+              (funcall highlight snippet))
             (add-text-properties
-             0 plen
-             `(face consult-file consult--prefix-group ,project)
+             0 glen
+             `(face consult-file consult--prefix-group ,group)
              formatted)
             (put-text-property
-             (1+ plen) (+ 1 plen llen)
+             glen (+ glen 2)
              'face 'consult-line-number formatted)
             (put-text-property
              0 (length formatted) 'claude-log--file file formatted)
             (push formatted result)))))))
+
+(defun claude-log--build-session-date-index ()
+  "Build a hash table mapping session IDs to formatted date strings."
+  (let ((history-file (expand-file-name
+                       "history.jsonl" claude-log-directory))
+        (index (make-hash-table :test #'equal)))
+    (when (file-exists-p history-file)
+      (dolist (entry (claude-log--parse-jsonl-file history-file))
+        (when-let* ((sid (plist-get entry :sessionId))
+                    (ts (plist-get entry :timestamp)))
+          (unless (gethash sid index)
+            (puthash sid (claude-log--format-epoch-ms ts) index)))))
+    index))
+
+(defun claude-log--session-date-from-path (path date-index)
+  "Look up the session date for PATH in DATE-INDEX."
+  (let ((sid (file-name-sans-extension
+              (file-name-nondirectory path))))
+    (or (gethash sid date-index) "unknown")))
+
+(defun claude-log--extract-snippet (json-content)
+  "Extract a readable text snippet from raw JSON-CONTENT."
+  (let ((parsed (ignore-errors
+                  (json-parse-string json-content
+                                     :object-type 'plist
+                                     :array-type 'list))))
+    (if parsed
+        (claude-log--extract-message-text parsed)
+      (claude-log--truncate-string json-content 120))))
+
+(defun claude-log--extract-message-text (entry)
+  "Extract readable text from a parsed JSONL ENTRY."
+  (let* ((message (plist-get entry :message))
+         (content (plist-get message :content))
+         (text (claude-log--content-to-text content)))
+    (claude-log--truncate-string
+     (claude-log--normalize-whitespace text) 120)))
+
+(defun claude-log--content-to-text (content)
+  "Convert message CONTENT to plain text."
+  (cond
+   ((stringp content) content)
+   ((listp content)
+    (mapconcat #'claude-log--content-item-text content " "))
+   (t "")))
+
+(defun claude-log--content-item-text (item)
+  "Extract text from a single CONTENT ITEM."
+  (or (plist-get item :text)
+      (plist-get item :thinking)
+      (when-let* ((name (plist-get item :name)))
+        (format "[%s]" name))
+      ""))
 
 (defun claude-log--project-from-path (path)
   "Extract a readable project name from encoded grep PATH.
