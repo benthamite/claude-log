@@ -1048,7 +1048,8 @@ Returns the position, or nil."
     ('hidden (claude-log--hide-sections-matching "^#### Thinking$")))
   (pcase claude-log-show-tools
     ('collapsed (claude-log--collapse-headings-matching "^#### Tool"))
-    ('hidden (claude-log--hide-sections-matching "^#### Tool"))))
+    ('hidden (claude-log--hide-sections-matching "^#### Tool")))
+  (claude-log--hide-empty-turns))
 
 (defun claude-log--find-section-end ()
   "Find the end of the #### section at point.
@@ -1155,6 +1156,47 @@ Hides both the heading and its body."
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'claude-log-section)
       (delete-overlay ov))))
+
+(defun claude-log--hide-empty-turns ()
+  "Hide turn headings whose visible content is entirely invisible.
+After tool/thinking sections are hidden, some assistant turns may
+contain no visible content.  This hides those headings and their
+preceding separator."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^## Assistant — " nil t)
+      (let* ((heading-bol (line-beginning-position))
+             (turn-start (save-excursion
+                           (goto-char heading-bol)
+                           (if (re-search-backward
+                                "^---$" (max (point-min) (- heading-bol 5)) t)
+                               (match-beginning 0)
+                             heading-bol)))
+             (content-start (save-excursion (end-of-line) (1+ (point))))
+             (turn-end (save-excursion
+                         (goto-char content-start)
+                         (if (re-search-forward "^---$" nil t)
+                             (match-beginning 0)
+                           (point-max)))))
+        (when (claude-log--region-all-invisible-p content-start turn-end)
+          (let ((ov (make-overlay turn-start turn-end nil t)))
+            (overlay-put ov 'invisible 'claude-log-hidden)
+            (overlay-put ov 'claude-log-section t)))))))
+
+(defun claude-log--region-all-invisible-p (start end)
+  "Return non-nil if all non-whitespace in START..END is invisible."
+  (save-excursion
+    (goto-char start)
+    (catch 'visible
+      (while (< (point) end)
+        (let ((inv (get-char-property (point) 'invisible)))
+          (if (and inv (invisible-p inv))
+              (goto-char (next-single-char-property-change
+                          (point) 'invisible nil end))
+            (if (looking-at-p "[[:space:]\n]")
+                (forward-char 1)
+              (throw 'visible nil)))))
+      t)))
 
 (defun claude-log-refresh ()
   "Re-render from JSONL source and reload buffer."
