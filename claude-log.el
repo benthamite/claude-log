@@ -172,6 +172,9 @@ search string.  INITIAL is the optional initial input."
 (declare-function consult--grep-format "consult")
 (declare-function consult--ripgrep-make-builder "consult")
 (declare-function consult--async-transform-by-input "consult")
+(declare-function consult--temporary-files "consult")
+(declare-function consult--jump-state "consult")
+(declare-function consult--marker-from-line-column "consult")
 (defvar consult-ripgrep-args)
 (defvar consult--grep-match-regexp)
 
@@ -182,7 +185,7 @@ INITIAL is the optional initial input."
          (date-index (claude-log--build-session-date-index))
          (match
           (cl-letf (((symbol-function 'consult--grep-state)
-                     (lambda () (lambda (_action _cand))))
+                     #'claude-log--grep-state)
                     ((symbol-function 'consult--grep-format)
                      (lambda (builder)
                        (claude-log--grep-format builder date-index))))
@@ -192,12 +195,35 @@ INITIAL is the optional initial input."
     (when match
       (claude-log--open-grep-match match dir))))
 
+(defun claude-log--grep-state ()
+  "State function for previewing search results in raw JSONL."
+  (let ((open (consult--temporary-files))
+        (jump (consult--jump-state)))
+    (lambda (action cand)
+      (when (or (not cand) (eq action 'return))
+        (funcall open))
+      (funcall jump action
+               (when (and cand (not (eq action 'return)))
+                 (claude-log--candidate-marker cand open))))))
+
+(defun claude-log--candidate-marker (cand open)
+  "Create a preview marker for search candidate CAND.
+OPEN is a temporary file opener from consult."
+  (when-let* ((file (get-text-property 0 'claude-log--file cand))
+              (line (get-text-property 0 'claude-log--line cand))
+              (path (expand-file-name
+                     file
+                     (expand-file-name "projects" claude-log-directory)))
+              (buf (funcall open path)))
+    (consult--marker-from-line-column buf line 0)))
+
 (defun claude-log--consult-ripgrep-builder (paths)
   "Build a ripgrep command restricted to JSONL files in PATHS.
-Limits to one match per file."
+Limits to one match per file and disables the column limit so
+that full JSONL lines are available for snippet extraction."
   (let ((consult-ripgrep-args
          (concat consult-ripgrep-args
-                 " --glob=*.jsonl --max-count=1")))
+                 " --glob=*.jsonl --max-count=1 --max-columns=0")))
     (consult--ripgrep-make-builder paths)))
 
 (defun claude-log--grep-format (builder date-index)
@@ -207,26 +233,37 @@ BUILDER is the command line builder function.
 DATE-INDEX maps session IDs to formatted date strings."
   (consult--async-transform-by-input
    (lambda (input)
-     (let ((highlight (cdr (funcall builder input))))
+     (let ((highlight (cdr (funcall builder input)))
+           (term (claude-log--extract-search-term input)))
        (lambda (cands)
          (claude-log--format-grep-candidates
-          cands highlight date-index))))))
+          cands highlight date-index term))))))
 
-(defun claude-log--format-grep-candidates (cands highlight date-index)
+(defun claude-log--extract-search-term (input)
+  "Extract the search term from consult async INPUT string.
+Strips the leading `#' async trigger character."
+  (if (string-match "\\`#\\([^#]+\\)" input)
+      (match-string 1 input)
+    input))
+
+(defun claude-log--format-grep-candidates (cands highlight date-index term)
   "Format CANDS from raw ripgrep output into readable candidates.
 HIGHLIGHT is the match highlight function.
-DATE-INDEX maps session IDs to formatted date strings."
+DATE-INDEX maps session IDs to formatted date strings.
+TERM is the search term for centering snippets."
   (let (result)
     (save-match-data
       (dolist (str cands (nreverse result))
         (when (string-match consult--grep-match-regexp str)
           (let* ((file (match-string 1 str))
+                 (line (string-to-number (match-string 2 str)))
                  (raw-content (substring str (match-end 0)))
                  (project (claude-log--project-from-path file))
                  (date (claude-log--session-date-from-path
                         file date-index))
                  (group (format "%s — %s" project date))
-                 (snippet (claude-log--extract-snippet raw-content))
+                 (snippet (claude-log--extract-snippet
+                           raw-content term))
                  (formatted (concat group ":0:" snippet))
                  (glen (length group)))
             (when highlight
@@ -240,6 +277,8 @@ DATE-INDEX maps session IDs to formatted date strings."
              'face 'consult-line-number formatted)
             (put-text-property
              0 (length formatted) 'claude-log--file file formatted)
+            (put-text-property
+             0 (length formatted) 'claude-log--line line formatted)
             (push formatted result)))))))
 
 (defun claude-log--build-session-date-index ()
@@ -261,50 +300,74 @@ DATE-INDEX maps session IDs to formatted date strings."
               (file-name-nondirectory path))))
     (or (gethash sid date-index) "unknown")))
 
-(defun claude-log--extract-snippet (json-content)
-  "Extract a readable text snippet from raw JSON-CONTENT."
-  (let ((parsed (ignore-errors
-                  (json-parse-string json-content
-                                     :object-type 'plist
-                                     :array-type 'list))))
-    (if parsed
-        (claude-log--extract-message-text parsed)
-      (claude-log--truncate-string json-content 120))))
+(defun claude-log--extract-snippet (json-content term)
+  "Extract a readable text snippet from raw JSON-CONTENT.
+Centers the snippet on TERM when found."
+  (let* ((parsed (ignore-errors
+                   (json-parse-string json-content
+                                      :object-type 'plist
+                                      :array-type 'list)))
+         (strings (when parsed (claude-log--collect-strings parsed)))
+         (long-strings (seq-filter (lambda (s) (> (length s) 20))
+                                   strings))
+         (best (claude-log--find-matching-string long-strings term)))
+    (if best
+        (claude-log--center-on-term best term 120)
+      (claude-log--truncate-string
+       (claude-log--normalize-whitespace json-content) 120))))
 
-(defun claude-log--extract-message-text (entry)
-  "Extract readable text from a parsed JSONL ENTRY."
-  (let* ((message (plist-get entry :message))
-         (content (plist-get message :content))
-         (text (claude-log--content-to-text content)))
-    (claude-log--truncate-string
-     (claude-log--normalize-whitespace text) 120)))
-
-(defun claude-log--content-to-text (content)
-  "Convert message CONTENT to plain text."
+(defun claude-log--collect-strings (obj)
+  "Recursively collect all string values from parsed JSON OBJ."
   (cond
-   ((stringp content) content)
-   ((listp content)
-    (mapconcat #'claude-log--content-item-text content " "))
-   (t "")))
+   ((stringp obj) (list obj))
+   ((listp obj)
+    (if (and obj (keywordp (car obj)))
+        (cl-loop for (_key val) on obj by #'cddr
+                 append (claude-log--collect-strings val))
+      (cl-loop for item in obj
+               append (claude-log--collect-strings item))))
+   (t nil)))
 
-(defun claude-log--content-item-text (item)
-  "Extract text from a single CONTENT ITEM."
-  (or (plist-get item :text)
-      (plist-get item :thinking)
-      (when-let* ((name (plist-get item :name)))
-        (format "[%s]" name))
-      ""))
+(defun claude-log--find-matching-string (strings term)
+  "Find the first string in STRINGS containing TERM (case-insensitive).
+Falls back to the longest string if TERM is not found."
+  (or (cl-find-if (lambda (s)
+                    (let ((case-fold-search t))
+                      (string-match-p (regexp-quote term) s)))
+                  strings)
+      (car (sort (copy-sequence strings)
+                 (lambda (a b) (> (length a) (length b)))))))
+
+(defun claude-log--center-on-term (text term max-length)
+  "Extract a snippet from TEXT centered on TERM, up to MAX-LENGTH chars."
+  (let* ((normalized (claude-log--normalize-whitespace text))
+         (case-fold-search t)
+         (pos (string-match (regexp-quote term) normalized)))
+    (if pos
+        (let* ((half (/ max-length 2))
+               (start (max 0 (- pos half)))
+               (snippet (substring normalized start)))
+          (claude-log--truncate-string snippet max-length))
+      (claude-log--truncate-string normalized max-length))))
 
 (defun claude-log--project-from-path (path)
   "Extract a readable project name from encoded grep PATH.
-PATH looks like `-Users-foo-repos-project/uuid.jsonl'."
-  (let ((dir (directory-file-name (or (file-name-directory path) path))))
+PATH looks like `-Users-foo-repos-project/uuid.jsonl'.
+Only the top-level directory is used, ignoring subdirectories
+like subagent session folders."
+  (let ((top-dir (claude-log--top-directory path)))
     (cond
-     ((string-match ".*-repos-\\(.+\\)" dir)
-      (match-string 1 dir))
-     ((string-match "-\\([^/]+\\)\\'" dir)
-      (match-string 1 dir))
-     (t dir))))
+     ((string-match ".*-repos-\\(.+\\)" top-dir)
+      (match-string 1 top-dir))
+     ((string-match "-\\([^-/]+\\)\\'" top-dir)
+      (match-string 1 top-dir))
+     (t top-dir))))
+
+(defun claude-log--top-directory (path)
+  "Return the first path component (top-level directory) of PATH."
+  (if (string-match "\\`\\([^/]+\\)" path)
+      (match-string 1 path)
+    path))
 
 (defun claude-log--open-grep-match (match dir)
   "Extract the file path from consult grep MATCH and open it.
