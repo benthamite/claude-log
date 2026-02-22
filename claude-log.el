@@ -400,25 +400,58 @@ known system XML tag."
      (t ""))))
 
 (defun claude-log--render-user-turn (content time-str)
-  "Render a user turn with CONTENT and TIME-STR."
-  (let ((parts '()))
-    (push (format "---\n\n## User — %s\n\n" time-str) parts)
-    (if (stringp content)
-        (push (format "%s\n\n" content) parts)
+  "Render a user turn with CONTENT and TIME-STR.
+If CONTENT contains only tool results and no user text, render
+them without a User heading."
+  (if (stringp content)
+      (format "---\n\n## User — %s\n\n%s\n\n" time-str content)
+    (let ((text-parts (claude-log--collect-user-text content))
+          (tool-parts (claude-log--collect-tool-results content)))
+      (cond
+       ((and text-parts (null tool-parts))
+        (concat (format "---\n\n## User — %s\n\n" time-str)
+                (string-join text-parts)))
+       ((and text-parts tool-parts)
+        (concat (format "---\n\n## User — %s\n\n" time-str)
+                (string-join text-parts)
+                (string-join tool-parts)))
+       (tool-parts
+        (string-join tool-parts))
+       (t "")))))
+
+(defun claude-log--collect-user-text (content)
+  "Collect non-empty text parts from user CONTENT array.
+Returns a list of formatted strings, or nil if there is no text."
+  (let (parts)
+    (dolist (item content)
+      (when (equal (plist-get item :type) "text")
+        (let ((text (plist-get item :text)))
+          (when (and text (not (string-empty-p (string-trim text))))
+            (push (format "%s\n\n" text) parts)))))
+    (nreverse parts)))
+
+(defun claude-log--collect-tool-results (content)
+  "Collect tool result parts from user CONTENT array.
+Returns a list of formatted strings, or nil if there are none or
+`claude-log-show-tool-output' is nil."
+  (when claude-log-show-tool-output
+    (let (parts)
       (dolist (item content)
-        (let ((item-type (plist-get item :type)))
-          (cond
-           ((equal item-type "text")
-            (push (format "%s\n\n" (plist-get item :text)) parts))
-           ((equal item-type "tool_result")
-            (when claude-log-show-tool-output
-              (push (claude-log--render-tool-result item) parts)))))))
-    (apply #'concat (nreverse parts))))
+        (when (equal (plist-get item :type) "tool_result")
+          (push (claude-log--render-tool-result item) parts)))
+      (nreverse parts))))
 
 (defun claude-log--render-assistant-turn (content time-str)
-  "Render an assistant turn with CONTENT and TIME-STR."
+  "Render an assistant turn with CONTENT and TIME-STR.
+Returns an empty string if CONTENT produces no visible output."
+  (let ((body (claude-log--render-assistant-body content)))
+    (if (string-empty-p body)
+        ""
+      (concat (format "---\n\n## Assistant — %s\n\n" time-str) body))))
+
+(defun claude-log--render-assistant-body (content)
+  "Render the body of an assistant turn from CONTENT items."
   (let ((parts '()))
-    (push (format "---\n\n## Assistant — %s\n\n" time-str) parts)
     (when (listp content)
       (dolist (item content)
         (let ((item-type (plist-get item :type)))
@@ -428,7 +461,7 @@ known system XML tag."
               (push (claude-log--render-thinking item) parts)))
            ((equal item-type "text")
             (let ((text (plist-get item :text)))
-              (when (and text (not (string-empty-p text)))
+              (when (and text (not (string-empty-p (string-trim text))))
                 (push (format "%s\n\n" text) parts))))
            ((equal item-type "tool_use")
             (push (claude-log--render-tool-use item) parts))))))
