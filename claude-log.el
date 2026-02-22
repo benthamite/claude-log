@@ -26,13 +26,16 @@
 ;;; Commentary:
 
 ;; Browse and render Claude Code conversation logs stored as JSONL files.
-;; Provides a session browser, Markdown rendering, live updates via
-;; file-notify, and outline-based navigation.
+;; Maintains a mirror directory of pre-rendered Markdown files so that
+;; standard tools (consult-ripgrep, dired, grep) work natively on
+;; readable content.
 ;;
 ;; Entry points:
-;;   `claude-log-browse-sessions' - pick a session from history
-;;   `claude-log-search-sessions' - search across all sessions
-;;   `claude-log-open-file'       - open a specific JSONL file
+;;   `claude-log-browse-sessions'        - pick a session from history
+;;   `claude-log-open-latest'            - open the most recent session
+;;   `claude-log-open-rendered-directory' - browse rendered files in dired
+;;   `claude-log-sync-all'               - render all unrendered/stale sessions
+;;   `claude-log-open-file'              - open a specific JSONL file
 
 ;;; Code:
 
@@ -96,6 +99,14 @@ project, then for a session within that project."
   "Maximum width of the first-message column in the session browser."
   :type 'integer)
 
+(defcustom claude-log-rendered-directory "~/.claude/rendered"
+  "Directory where rendered Markdown files are stored."
+  :type 'directory)
+
+(defcustom claude-log-slug-max-length 50
+  "Maximum length of the slug portion of rendered filenames."
+  :type 'integer)
+
 ;;;;; Internal variables
 
 (defvar-local claude-log--source-file nil
@@ -116,6 +127,12 @@ project, then for a session within that project."
 (defvar-local claude-log--session-date nil
   "Date string for the current session.")
 
+(defvar-local claude-log--session-id nil
+  "Session ID (UUID) for the current buffer.")
+
+(defvar-local claude-log--rendered-file nil
+  "Path to the rendered .md file for the current session.")
+
 ;;;;; Entry points
 
 ;;;###autoload
@@ -134,14 +151,92 @@ a project, then for a session within that project."
   "Open and render the Claude Code JSONL log at FILE."
   (interactive "fJSONL file: ")
   (let* ((file (expand-file-name file))
-         (buf (generate-new-buffer (claude-log--buffer-name file))))
-    (with-current-buffer buf
-      (claude-log--activate-mode)
-      (setq claude-log--source-file file)
-      (claude-log--render-full)
-      (when (and claude-log-live-update (not claude-log--watcher))
-        (claude-log--start-watcher)))
-    (pop-to-buffer buf)))
+         (session-id (file-name-sans-extension (file-name-nondirectory file)))
+         (entries (claude-log--parse-jsonl-file file))
+         (first-msg (seq-find
+                     (lambda (e) (member (plist-get e :type)
+                                         '("user" "assistant")))
+                     entries))
+         (progress (seq-find
+                    (lambda (e) (equal (plist-get e :type) "progress"))
+                    entries))
+         (ts-iso (when first-msg (plist-get first-msg :timestamp)))
+         (epoch-ms (when (stringp ts-iso)
+                     (claude-log--iso-to-epoch-ms ts-iso)))
+         (display (or (claude-log--first-user-text entries) ""))
+         (project (when progress (or (plist-get progress :cwd) "")))
+         (metadata (list :file file
+                         :timestamp epoch-ms
+                         :project (or project "")
+                         :display display)))
+    (claude-log--open-rendered session-id metadata)))
+
+;;;###autoload
+(defun claude-log-open-latest ()
+  "Open the most recent Claude Code session."
+  (interactive)
+  (let ((sessions (claude-log--read-sessions)))
+    (unless sessions
+      (user-error "No sessions found"))
+    (let* ((latest (car sessions))
+           (session-id (car latest))
+           (metadata (cdr latest)))
+      (claude-log--open-rendered session-id metadata))))
+
+;;;###autoload
+(defun claude-log-open-rendered-directory ()
+  "Open the rendered Markdown directory in dired."
+  (interactive)
+  (let ((dir (expand-file-name claude-log-rendered-directory)))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    (dired dir)))
+
+;;;###autoload
+(defun claude-log-sync-all ()
+  "Render all unrendered or stale sessions.
+Uses timers to avoid blocking Emacs."
+  (interactive)
+  (let* ((sessions (claude-log--read-sessions))
+         (index (claude-log--read-index))
+         (pending (claude-log--pending-sessions sessions index)))
+    (if (null pending)
+        (message "All %d sessions up to date" (length sessions))
+      (message "Syncing %d session(s)..." (length pending))
+      (claude-log--sync-next pending index 0 (length pending)))))
+
+(defun claude-log--pending-sessions (sessions index)
+  "Return sessions from SESSIONS that need rendering per INDEX."
+  (seq-filter
+   (lambda (session)
+     (let* ((sid (car session))
+            (meta (cdr session))
+            (entry (gethash sid index))
+            (rpath (when entry (plist-get entry :file)))
+            (csize (when entry (plist-get entry :jsonl-size)))
+            (jfile (plist-get meta :file))
+            (jsize (file-attribute-size (file-attributes jfile))))
+       (not (and rpath (file-exists-p rpath) csize jsize (= csize jsize)))))
+   sessions))
+
+(defun claude-log--sync-next (remaining index done total)
+  "Render the next session in REMAINING using INDEX.
+DONE sessions rendered so far out of TOTAL."
+  (if (null remaining)
+      (progn
+        (claude-log--write-index index)
+        (message "Sync complete: rendered %d session(s)" total))
+    (let* ((session (car remaining))
+           (sid (car session))
+           (meta (cdr session)))
+      (condition-case err
+          (let ((result (claude-log--render-to-file sid meta)))
+            (puthash sid (list :file (car result) :jsonl-size (cdr result))
+                     index))
+        (error (message "Failed to render %s: %s"
+                        sid (error-message-string err))))
+      (run-with-timer 0 nil #'claude-log--sync-next
+                      (cdr remaining) index (1+ done) total))))
 
 (defun claude-log--activate-mode ()
   "Activate `claude-log-mode' with parent mode hooks suppressed.
@@ -154,272 +249,194 @@ flycheck's global-mode hook to prevent unwanted side effects."
                after-change-major-mode-hook)))
     (claude-log-mode)))
 
-;;;###autoload
-(defun claude-log-search-sessions (&optional initial)
-  "Search across all sessions and open a matching one.
-When `consult' is available, search incrementally with ripgrep
-showing matching lines in context.  Otherwise, prompt for a
-search string.  INITIAL is the optional initial input."
-  (interactive)
-  (if (require 'consult nil t)
-      (claude-log--search-with-consult initial)
-    (claude-log--search-with-rg (read-string "Search sessions: "))))
+;;;;; Index file
 
-;;;;; Session search (consult)
+(defun claude-log--index-file ()
+  "Return the path to the rendered-directory index file."
+  (expand-file-name "_index.el" claude-log-rendered-directory))
 
-(declare-function consult--grep "consult")
-(declare-function consult--grep-state "consult")
-(declare-function consult--grep-format "consult")
-(declare-function consult--ripgrep-make-builder "consult")
-(declare-function consult--async-transform-by-input "consult")
-(declare-function consult--temporary-files "consult")
-(declare-function consult--jump-state "consult")
-(declare-function consult--marker-from-line-column "consult")
-(defvar consult-ripgrep-args)
-(defvar consult--grep-match-regexp)
+(defun claude-log--read-index ()
+  "Read the index hash table from disk.
+Returns an empty hash table if the file does not exist."
+  (let ((file (claude-log--index-file)))
+    (if (file-exists-p file)
+        (with-temp-buffer
+          (insert-file-contents file)
+          (read (current-buffer)))
+      (make-hash-table :test #'equal))))
 
-(defun claude-log--search-with-consult (&optional initial)
-  "Search sessions incrementally using consult and ripgrep.
-INITIAL is the optional initial input."
-  (let* ((dir (expand-file-name "projects" claude-log-directory))
-         (date-index (claude-log--build-session-date-index))
-         (match
-          (cl-letf (((symbol-function 'consult--grep-state)
-                     #'claude-log--grep-state)
-                    ((symbol-function 'consult--grep-format)
-                     (lambda (builder)
-                       (claude-log--grep-format builder date-index))))
-            (consult--grep "Search sessions"
-                           #'claude-log--consult-ripgrep-builder
-                           dir initial))))
-    (when match
-      (claude-log--open-grep-match match dir))))
+(defun claude-log--write-index (index)
+  "Write INDEX hash table to disk."
+  (let ((file (claude-log--index-file)))
+    (make-directory (file-name-directory file) t)
+    (with-temp-file file
+      (let ((print-level nil)
+            (print-length nil))
+        (prin1 index (current-buffer))
+        (insert "\n")))))
 
-(defun claude-log--grep-state ()
-  "State function for previewing search results in raw JSONL."
-  (let ((open (consult--temporary-files))
-        (jump (consult--jump-state)))
-    (lambda (action cand)
-      (when (or (not cand) (eq action 'return))
-        (funcall open))
-      (funcall jump action
-               (when (and cand (not (eq action 'return)))
-                 (claude-log--candidate-marker cand open))))))
+(defun claude-log--index-update (session-id rendered-path jsonl-size)
+  "Update the index entry for SESSION-ID with RENDERED-PATH and JSONL-SIZE."
+  (let ((index (claude-log--read-index)))
+    (puthash session-id (list :file rendered-path :jsonl-size jsonl-size) index)
+    (claude-log--write-index index)))
 
-(defun claude-log--candidate-marker (cand open)
-  "Create a preview marker for search candidate CAND.
-OPEN is a temporary file opener from consult."
-  (when-let* ((file (get-text-property 0 'claude-log--file cand))
-              (line (get-text-property 0 'claude-log--line cand))
-              (path (expand-file-name
-                     file
-                     (expand-file-name "projects" claude-log-directory)))
-              (buf (funcall open path)))
-    (consult--marker-from-line-column buf line 0)))
+;;;;; Slug and filepath
 
-(defun claude-log--consult-ripgrep-builder (paths)
-  "Build a ripgrep command restricted to JSONL files in PATHS.
-Limits to one match per file and disables the column limit so
-that full JSONL lines are available for snippet extraction."
-  (let ((consult-ripgrep-args
-         (concat consult-ripgrep-args
-                 " --glob=*.jsonl --max-count=1 --max-columns=0")))
-    (consult--ripgrep-make-builder paths)))
+(defun claude-log--slugify (text)
+  "Convert TEXT to a filename-safe slug.
+Lowercases, replaces non-alphanumeric runs with hyphens,
+and truncates to `claude-log-slug-max-length'."
+  (let* ((slug (downcase (or text "")))
+         (slug (replace-regexp-in-string "[^a-z0-9]+" "-" slug))
+         (slug (replace-regexp-in-string "\\`-+\\|-+\\'" "" slug))
+         (slug (if (> (length slug) claude-log-slug-max-length)
+                   (substring slug 0 claude-log-slug-max-length)
+                 slug)))
+    (if (string-empty-p slug) "untitled" slug)))
 
-(defun claude-log--grep-format (builder date-index)
-  "Return a transform function that formats grep results.
-Extracts readable snippets from JSON and adds project/date headers.
-BUILDER is the command line builder function.
-DATE-INDEX maps session IDs to formatted date strings."
-  (consult--async-transform-by-input
-   (lambda (input)
-     (let ((highlight (cdr (funcall builder input)))
-           (term (claude-log--extract-search-term input)))
-       (lambda (cands)
-         (claude-log--format-grep-candidates
-          cands highlight date-index term))))))
+(defun claude-log--rendered-filepath (_session-id metadata)
+  "Compute the rendered .md filepath for a session.
+METADATA is a plist with :timestamp, :project, :display."
+  (let* ((ts (plist-get metadata :timestamp))
+         (date-str (if (numberp ts)
+                       (format-time-string "%Y-%m-%d_%H-%M"
+                                           (seconds-to-time (/ ts 1000.0)))
+                     "unknown"))
+         (display (or (plist-get metadata :display) ""))
+         (slug (claude-log--slugify display))
+         (project (claude-log--short-project
+                   (or (plist-get metadata :project) "")))
+         (project-dir (expand-file-name project claude-log-rendered-directory))
+         (filename (format "%s_%s.md" date-str slug)))
+    (expand-file-name filename project-dir)))
 
-(defun claude-log--extract-search-term (input)
-  "Extract the search term from consult async INPUT string.
-Strips the leading `#' async trigger character."
-  (if (string-match "\\`#\\([^#]+\\)" input)
-      (match-string 1 input)
-    input))
-
-(defun claude-log--format-grep-candidates (cands highlight date-index term)
-  "Format CANDS from raw ripgrep output into readable candidates.
-HIGHLIGHT is the match highlight function.
-DATE-INDEX maps session IDs to formatted date strings.
-TERM is the search term for centering snippets."
-  (let (result)
-    (save-match-data
-      (dolist (str cands (nreverse result))
-        (when (string-match consult--grep-match-regexp str)
-          (let* ((file (match-string 1 str))
-                 (line (string-to-number (match-string 2 str)))
-                 (raw-content (substring str (match-end 0)))
-                 (project (claude-log--project-from-path file))
-                 (date (claude-log--session-date-from-path
-                        file date-index))
-                 (group (format "%s — %s" project date))
-                 (snippet (claude-log--extract-snippet
-                           raw-content term))
-                 (formatted (concat group ":0:" snippet))
-                 (glen (length group)))
-            (when highlight
-              (funcall highlight snippet))
-            (add-text-properties
-             0 glen
-             `(face consult-file consult--prefix-group ,group)
-             formatted)
-            (put-text-property
-             glen (+ glen 2)
-             'face 'consult-line-number formatted)
-            (put-text-property
-             0 (length formatted) 'claude-log--file file formatted)
-            (put-text-property
-             0 (length formatted) 'claude-log--line line formatted)
-            (push formatted result)))))))
-
-(defun claude-log--build-session-date-index ()
-  "Build a hash table mapping session IDs to formatted date strings."
-  (let ((history-file (expand-file-name
-                       "history.jsonl" claude-log-directory))
-        (index (make-hash-table :test #'equal)))
-    (when (file-exists-p history-file)
-      (dolist (entry (claude-log--parse-jsonl-file history-file))
-        (when-let* ((sid (plist-get entry :sessionId))
-                    (ts (plist-get entry :timestamp)))
-          (unless (gethash sid index)
-            (puthash sid (claude-log--format-epoch-ms ts) index)))))
-    index))
-
-(defun claude-log--session-date-from-path (path date-index)
-  "Look up the session date for PATH in DATE-INDEX."
-  (let ((sid (file-name-sans-extension
-              (file-name-nondirectory path))))
-    (or (gethash sid date-index) "unknown")))
-
-(defun claude-log--extract-snippet (json-content term)
-  "Extract a readable text snippet from raw JSON-CONTENT.
-Centers the snippet on TERM when found."
-  (let* ((parsed (ignore-errors
-                   (json-parse-string json-content
-                                      :object-type 'plist
-                                      :array-type 'list)))
-         (strings (when parsed (claude-log--collect-strings parsed)))
-         (long-strings (seq-filter (lambda (s) (> (length s) 20))
-                                   strings))
-         (best (claude-log--find-matching-string long-strings term)))
-    (if best
-        (claude-log--center-on-term best term 120)
-      (claude-log--truncate-string
-       (claude-log--normalize-whitespace json-content) 120))))
-
-(defun claude-log--collect-strings (obj)
-  "Recursively collect all string values from parsed JSON OBJ."
-  (cond
-   ((stringp obj) (list obj))
-   ((listp obj)
-    (if (and obj (keywordp (car obj)))
-        (cl-loop for (_key val) on obj by #'cddr
-                 append (claude-log--collect-strings val))
-      (cl-loop for item in obj
-               append (claude-log--collect-strings item))))
-   (t nil)))
-
-(defun claude-log--find-matching-string (strings term)
-  "Find the first string in STRINGS containing TERM (case-insensitive).
-Falls back to the longest string if TERM is not found."
-  (or (cl-find-if (lambda (s)
-                    (let ((case-fold-search t))
-                      (string-match-p (regexp-quote term) s)))
-                  strings)
-      (car (sort (copy-sequence strings)
-                 (lambda (a b) (> (length a) (length b)))))))
-
-(defun claude-log--center-on-term (text term max-length)
-  "Extract a snippet from TEXT centered on TERM, up to MAX-LENGTH chars."
-  (let* ((normalized (claude-log--normalize-whitespace text))
-         (case-fold-search t)
-         (pos (string-match (regexp-quote term) normalized)))
-    (if pos
-        (let* ((half (/ max-length 2))
-               (start (max 0 (- pos half)))
-               (snippet (substring normalized start)))
-          (claude-log--truncate-string snippet max-length))
-      (claude-log--truncate-string normalized max-length))))
-
-(defun claude-log--project-from-path (path)
-  "Extract a readable project name from encoded grep PATH.
-PATH looks like `-Users-foo-repos-project/uuid.jsonl'.
-Only the top-level directory is used, ignoring subdirectories
-like subagent session folders."
-  (let ((top-dir (claude-log--top-directory path)))
+(defun claude-log--first-user-text (entries)
+  "Return the text of the first user message in ENTRIES."
+  (when-let* ((first-user (seq-find
+                           (lambda (e)
+                             (and (equal (plist-get e :type) "user")
+                                  (not (claude-log--system-entry-p e))))
+                           entries))
+              (message (plist-get first-user :message))
+              (content (plist-get message :content)))
     (cond
-     ((string-match ".*-repos-\\(.+\\)" top-dir)
-      (match-string 1 top-dir))
-     ((string-match "-\\([^-/]+\\)\\'" top-dir)
-      (match-string 1 top-dir))
-     (t top-dir))))
+     ((stringp content) content)
+     ((listp content)
+      (when-let* ((text-item (seq-find
+                              (lambda (i)
+                                (equal (plist-get i :type) "text"))
+                              content)))
+        (plist-get text-item :text)))
+     (t nil))))
 
-(defun claude-log--top-directory (path)
-  "Return the first path component (top-level directory) of PATH."
-  (if (string-match "\\`\\([^/]+\\)" path)
-      (match-string 1 path)
-    path))
+(defun claude-log--iso-to-epoch-ms (ts)
+  "Convert ISO 8601 timestamp TS to epoch milliseconds."
+  (condition-case nil
+      (truncate (* (float-time (date-to-time ts)) 1000))
+    (error nil)))
 
-(defun claude-log--open-grep-match (match dir)
-  "Extract the file path from consult grep MATCH and open it.
-DIR is the base directory that paths are relative to."
-  (let ((file (or (get-text-property 0 'claude-log--file match)
-                  (substring-no-properties
-                   match 0
-                   (next-single-property-change 0 'face match)))))
-    (claude-log-open-file (expand-file-name file dir))))
+;;;;; Render to file
 
-;;;;; Session search (fallback)
+(defun claude-log--render-front-matter (session-id jsonl-file jsonl-size)
+  "Generate front matter comments for a rendered file.
+SESSION-ID is the UUID, JSONL-FILE the source path,
+JSONL-SIZE the source file size in bytes."
+  (format (concat "<!-- session: %s -->\n"
+                  "<!-- source: %s -->\n"
+                  "<!-- rendered: %s -->\n"
+                  "<!-- jsonl-size: %d -->\n\n")
+          session-id
+          jsonl-file
+          (format-time-string "%Y-%m-%dT%H:%M:%S")
+          (or jsonl-size 0)))
 
-(defun claude-log--search-with-rg (query)
-  "Search sessions matching QUERY and present for selection."
-  (let* ((matching-files (claude-log--grep-session-files query))
-         (sessions (claude-log--read-sessions))
-         (matching-sessions (claude-log--filter-sessions-by-files
-                             sessions matching-files)))
-    (unless matching-sessions
-      (user-error "No sessions match \"%s\"" query))
-    (message "Found %d matching session(s)" (length matching-sessions))
-    (if claude-log-group-by-project
-        (claude-log--browse-grouped matching-sessions)
-      (claude-log--browse-flat matching-sessions))))
+(defun claude-log--extract-session-metadata-from-entries (entries)
+  "Extract project and date from ENTRIES as a plist.
+Returns (:project SHORT-NAME :date DATE-STRING)."
+  (let (project date)
+    (when-let* ((first-msg (seq-find
+                            (lambda (e) (member (plist-get e :type)
+                                                '("user" "assistant")))
+                            entries)))
+      (setq date (claude-log--format-iso-timestamp
+                  (plist-get first-msg :timestamp))))
+    (when-let* ((progress (seq-find
+                           (lambda (e) (equal (plist-get e :type) "progress"))
+                           entries)))
+      (setq project (or (plist-get progress :cwd) "")))
+    (list :project (claude-log--short-project (or project ""))
+          :date (or date "unknown"))))
 
-(defun claude-log--grep-session-files (query)
-  "Return a list of JSONL file paths containing QUERY."
-  (let* ((projects-dir (expand-file-name "projects" claude-log-directory))
-         (output (claude-log--run-ripgrep query projects-dir)))
-    (split-string output "\n" t)))
+(defun claude-log--render-to-file (session-id metadata &optional output-path)
+  "Render the JSONL for SESSION-ID to a Markdown file.
+METADATA is a plist with :file, :timestamp, :project, :display.
+If OUTPUT-PATH is given, write there; otherwise compute from METADATA.
+Returns (RENDERED-PATH . JSONL-SIZE)."
+  (let* ((jsonl-file (plist-get metadata :file))
+         (entries (claude-log--parse-jsonl-file jsonl-file))
+         (conversation (claude-log--filter-conversation entries))
+         (rendered-path (or output-path
+                            (claude-log--rendered-filepath session-id metadata)))
+         (jsonl-size (file-attribute-size (file-attributes jsonl-file)))
+         (session-meta (claude-log--extract-session-metadata-from-entries
+                        entries)))
+    (make-directory (file-name-directory rendered-path) t)
+    (with-temp-file rendered-path
+      (insert (claude-log--render-front-matter
+               session-id jsonl-file jsonl-size))
+      (insert (format "# Session: %s — %s\n\n"
+                      (plist-get session-meta :project)
+                      (plist-get session-meta :date)))
+      (dolist (entry conversation)
+        (insert (claude-log--render-entry entry))))
+    (cons rendered-path jsonl-size)))
 
-(defun claude-log--run-ripgrep (query dir)
-  "Search for QUERY across JSONL files in DIR using ripgrep.
-Returns stdout as a string of newline-separated file paths."
-  (unless (executable-find "rg")
-    (user-error "ripgrep (rg) is required for session search"))
-  (with-temp-buffer
-    (call-process "rg" nil t nil
-                  "--files-with-matches" "--fixed-strings"
-                  "--ignore-case" "--glob" "*.jsonl"
-                  query dir)
-    (buffer-string)))
+(defun claude-log--ensure-rendered (session-id metadata)
+  "Ensure SESSION-ID has an up-to-date rendered .md file.
+METADATA is a plist with :file, :timestamp, :project, :display.
+Returns the path to the rendered file."
+  (let* ((index (claude-log--read-index))
+         (index-entry (gethash session-id index))
+         (rendered-path (when index-entry (plist-get index-entry :file)))
+         (cached-size (when index-entry (plist-get index-entry :jsonl-size)))
+         (jsonl-file (plist-get metadata :file))
+         (current-size (file-attribute-size (file-attributes jsonl-file))))
+    (if (and rendered-path
+             (file-exists-p rendered-path)
+             cached-size current-size
+             (= cached-size current-size))
+        rendered-path
+      (let ((result (claude-log--render-to-file session-id metadata)))
+        (puthash session-id
+                 (list :file (car result) :jsonl-size (cdr result))
+                 index)
+        (claude-log--write-index index)
+        (car result)))))
 
-(defun claude-log--filter-sessions-by-files (sessions files)
-  "Filter SESSIONS to those whose file appears in FILES."
-  (let ((file-set (make-hash-table :test #'equal)))
-    (dolist (f files)
-      (puthash (expand-file-name f) t file-set))
-    (seq-filter (lambda (session)
-                  (gethash (expand-file-name (plist-get (cdr session) :file))
-                           file-set))
-                sessions)))
+(defun claude-log--open-rendered (session-id metadata)
+  "Open the rendered .md file for SESSION-ID.
+METADATA is a plist with :file, :timestamp, :project, :display."
+  (let* ((rendered-path (claude-log--ensure-rendered session-id metadata))
+         (buf (generate-new-buffer (claude-log--buffer-name rendered-path))))
+    (with-current-buffer buf
+      (claude-log--activate-mode)
+      (setq claude-log--source-file (plist-get metadata :file)
+            claude-log--session-id session-id
+            claude-log--rendered-file rendered-path
+            claude-log--session-project (plist-get metadata :project))
+      (let ((inhibit-read-only t))
+        (insert-file-contents rendered-path))
+      (claude-log--record-offset)
+      (when (and claude-log-live-update (not claude-log--watcher))
+        (claude-log--start-watcher))
+      (claude-log--collapse-as-configured)
+      (goto-char (point-min)))
+    (pop-to-buffer buf)))
+
+(defun claude-log--append-to-file (file text)
+  "Append TEXT to FILE on disk."
+  (write-region text nil file t 'quiet))
 
 ;;;;; Session browser
 
@@ -464,8 +481,10 @@ Each value is a plist (:display :timestamp :project :file)."
   "Present all SESSIONS in a single `completing-read'."
   (let* ((candidates (claude-log--build-candidates sessions))
          (selected (claude-log--completing-read "Session: " candidates))
-         (file (alist-get selected candidates nil nil #'equal)))
-    (claude-log-open-file file)))
+         (value (alist-get selected candidates nil nil #'equal))
+         (session-id (car value))
+         (metadata (cdr value)))
+    (claude-log--open-rendered session-id metadata)))
 
 (defun claude-log--browse-grouped (sessions)
   "Present SESSIONS grouped by project: first pick project, then session."
@@ -475,8 +494,10 @@ Each value is a plist (:display :timestamp :project :file)."
          (project-sessions (alist-get project grouped nil nil #'equal))
          (candidates (claude-log--build-candidates project-sessions))
          (selected (claude-log--completing-read "Session: " candidates))
-         (file (alist-get selected candidates nil nil #'equal)))
-    (claude-log-open-file file)))
+         (value (alist-get selected candidates nil nil #'equal))
+         (session-id (car value))
+         (metadata (cdr value)))
+    (claude-log--open-rendered session-id metadata)))
 
 (defun claude-log--completing-read (prompt collection)
   "Read from COLLECTION with PROMPT, preserving display order."
@@ -503,10 +524,11 @@ Projects are sorted by most recent session timestamp."
                        (> (or ts-a 0) (or ts-b 0))))))))
 
 (defun claude-log--build-candidates (sessions)
-  "Build an alist of (display-string . file-path) from SESSIONS."
+  "Build an alist of (display-string . (session-id . metadata)) from SESSIONS."
   (mapcar
    (lambda (session)
-     (let* ((meta (cdr session))
+     (let* ((session-id (car session))
+            (meta (cdr session))
             (ts (plist-get meta :timestamp))
             (date (claude-log--format-epoch-ms ts))
             (project (claude-log--short-project (plist-get meta :project)))
@@ -514,7 +536,7 @@ Projects are sorted by most recent session timestamp."
                       (plist-get meta :display)))
             (display (claude-log--truncate-string display claude-log-display-width))
             (label (format "%s  %-20s  \"%s\"" date project display)))
-       (cons label (plist-get meta :file))))
+       (cons label (cons session-id meta))))
    sessions))
 
 (defun claude-log--short-project (path)
@@ -882,10 +904,17 @@ COLLECTION is a list of strings or an alist of (string . value)."
   (- (match-end 0) (match-beginning 0) 1))
 
 (defun claude-log--cleanup ()
-  "Clean up file watcher when buffer is killed."
+  "Clean up file watcher and update index when buffer is killed."
   (when claude-log--watcher
     (file-notify-rm-watch claude-log--watcher)
-    (setq claude-log--watcher nil)))
+    (setq claude-log--watcher nil))
+  (when (and claude-log--session-id claude-log--rendered-file claude-log--source-file)
+    (let ((final-size (file-attribute-size
+                       (file-attributes claude-log--source-file))))
+      (when final-size
+        (claude-log--index-update claude-log--session-id
+                                  claude-log--rendered-file
+                                  final-size)))))
 
 ;;;;; Live updates
 
@@ -937,11 +966,14 @@ If AT-END is non-nil, scroll to show new content."
       (goto-char (point-max)))))
 
 (defun claude-log--append-rendered-line (line)
-  "Parse LINE as JSON and append its rendering if it is a conversation entry."
+  "Parse LINE as JSON and append its rendering if it is a conversation entry.
+Appends to both the buffer and the rendered .md file on disk."
   (when-let* ((entry (claude-log--try-parse-json line)))
     (when (claude-log--conversation-entry-p entry)
       (let ((rendered (claude-log--render-entry entry))
             (inhibit-read-only t))
+        (when claude-log--rendered-file
+          (claude-log--append-to-file claude-log--rendered-file rendered))
         (save-excursion
           (goto-char (point-max))
           (insert rendered)
@@ -1032,11 +1064,24 @@ Returns the position, or nil."
       (forward-line 1))))
 
 (defun claude-log-refresh ()
-  "Re-render the buffer from scratch."
+  "Re-render from JSONL source and reload buffer."
   (interactive)
   (when claude-log--source-file
     (setq claude-log--partial-line "")
-    (claude-log--render-full)))
+    (if (and claude-log--session-id claude-log--rendered-file)
+        (let ((metadata (list :file claude-log--source-file
+                              :timestamp nil
+                              :project (or claude-log--session-project "")
+                              :display "")))
+          (claude-log--render-to-file
+           claude-log--session-id metadata claude-log--rendered-file)
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert-file-contents claude-log--rendered-file)
+            (goto-char (point-min))
+            (claude-log--collapse-as-configured)
+            (claude-log--record-offset)))
+      (claude-log--render-full))))
 
 (defun claude-log-copy-turn ()
   "Copy the current turn (from ## heading to next ##) to the kill ring."
