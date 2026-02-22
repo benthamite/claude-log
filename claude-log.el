@@ -318,10 +318,34 @@ Projects are sorted by most recent session timestamp."
   (json-parse-string line :object-type 'plist :array-type 'list))
 
 (defun claude-log--filter-conversation (entries)
-  "Filter ENTRIES to only user and assistant messages."
-  (seq-filter (lambda (entry)
-                (member (plist-get entry :type) '("user" "assistant")))
-              entries))
+  "Filter ENTRIES to user and assistant messages, excluding system entries."
+  (seq-filter #'claude-log--conversation-entry-p entries))
+
+(defun claude-log--conversation-entry-p (entry)
+  "Return non-nil if ENTRY is a genuine conversation message."
+  (let ((type (plist-get entry :type)))
+    (and (member type '("user" "assistant"))
+         (not (claude-log--system-entry-p entry)))))
+
+(defconst claude-log--system-tag-regexp
+  (rx bos (0+ space) "<"
+      (or "local-command-caveat"
+          "local-command-stdout"
+          "local-command-stderr"
+          "command-name"
+          "command-message"
+          "task-notification"
+          "teammate-message")
+      (or ">" " "))
+  "Regexp matching system-generated XML tags in user entries.")
+
+(defun claude-log--system-entry-p (entry)
+  "Return non-nil if ENTRY is a system-generated message.
+These are user-role entries whose string content starts with a
+known system XML tag."
+  (let* ((content (plist-get (plist-get entry :message) :content)))
+    (and (stringp content)
+         (string-match-p claude-log--system-tag-regexp content))))
 
 ;;;;; Rendering
 
@@ -640,7 +664,7 @@ If AT-END is non-nil, scroll to show new content."
   "Parse LINE as JSON and append its rendering if it is a conversation entry."
   (condition-case nil
       (let ((entry (claude-log--parse-json-line line)))
-        (when (member (plist-get entry :type) '("user" "assistant"))
+        (when (claude-log--conversation-entry-p entry)
           (let ((rendered (claude-log--render-entry entry))
                 (inhibit-read-only t))
             (save-excursion
