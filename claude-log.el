@@ -716,8 +716,9 @@ Returns an empty string if CONTENT produces no visible output."
 (defun claude-log--render-thinking (item)
   "Render a thinking ITEM."
   (let* ((text (or (plist-get item :thinking) ""))
-         (truncated (claude-log--truncate-string text claude-log-max-tool-result-length)))
-    (format "#### Thinking\n\n%s\n\n" truncated)))
+         (truncated (claude-log--truncate-string text claude-log-max-tool-result-length))
+         (clean (replace-regexp-in-string "\n\n+" "\n" truncated)))
+    (format "#### Thinking\n\n%s\n\n" clean)))
 
 (defun claude-log--render-tool-use (item)
   "Render a tool_use ITEM with a smart summary of its input."
@@ -886,6 +887,8 @@ COLLECTION is a list of strings or an alist of (string . value)."
   (setq-local outline-regexp "##+ ")
   (setq-local outline-level #'claude-log--outline-level)
   (outline-minor-mode 1)
+  (add-to-invisibility-spec '(claude-log-collapsed . t))
+  (add-to-invisibility-spec 'claude-log-hidden)
   (add-hook 'kill-buffer-hook #'claude-log--cleanup nil t))
 
 (defun claude-log--outline-level ()
@@ -1006,12 +1009,28 @@ Returns the position, or nil."
 (defun claude-log-toggle-section ()
   "Toggle the visibility of the section at point."
   (interactive)
-  (when (bound-and-true-p outline-minor-mode)
-    (outline-toggle-children)))
+  (save-excursion
+    (beginning-of-line)
+    (cond
+     ((looking-at "^####+ ")
+      (let* ((heading-end (save-excursion (end-of-line) (point)))
+             (ov (cl-find-if (lambda (o) (overlay-get o 'claude-log-section))
+                             (overlays-at heading-end))))
+        (if ov
+            (delete-overlay ov)
+          (let ((section-end (claude-log--find-section-end)))
+            (when (< heading-end section-end)
+              (let ((new-ov (make-overlay heading-end section-end nil t)))
+                (overlay-put new-ov 'invisible 'claude-log-collapsed)
+                (overlay-put new-ov 'claude-log-section t)))))))
+     (t
+      (when (bound-and-true-p outline-minor-mode)
+        (outline-toggle-children))))))
 
 (defun claude-log-collapse-all-tools ()
   "Collapse all tool-use, tool-result, and thinking sections."
   (interactive)
+  (claude-log--remove-section-overlays)
   (claude-log--collapse-headings-matching "^####+ "))
 
 (defun claude-log-expand-all ()
@@ -1019,10 +1038,11 @@ Returns the position, or nil."
   (interactive)
   (let ((inhibit-read-only t))
     (outline-show-all)
-    (claude-log--remove-hidden-overlays)))
+    (claude-log--remove-section-overlays)))
 
 (defun claude-log--collapse-as-configured ()
   "Collapse or hide sections per user configuration."
+  (claude-log--remove-section-overlays)
   (pcase claude-log-show-thinking
     ('collapsed (claude-log--collapse-headings-matching "^#### Thinking$"))
     ('hidden (claude-log--hide-sections-matching "^#### Thinking$")))
@@ -1030,75 +1050,110 @@ Returns the position, or nil."
     ('collapsed (claude-log--collapse-headings-matching "^#### Tool"))
     ('hidden (claude-log--hide-sections-matching "^#### Tool"))))
 
+(defun claude-log--find-section-end ()
+  "Find the end of the #### section at point.
+Point must be at the beginning of a #### heading line.
+The section includes the heading, body paragraph, and trailing
+blank lines.  Returns the position after the section."
+  (save-excursion
+    (forward-line 1)
+    ;; Skip blank lines between heading and body.
+    (while (and (not (eobp)) (looking-at-p "^[[:space:]]*$"))
+      (forward-line 1))
+    ;; Skip body lines (non-blank).
+    (while (and (not (eobp)) (not (looking-at-p "^[[:space:]]*$")))
+      (forward-line 1))
+    ;; Skip trailing blank lines.
+    (while (and (not (eobp)) (looking-at-p "^[[:space:]]*$"))
+      (forward-line 1))
+    (point)))
+
 (defun claude-log--collapse-headings-matching (regexp)
-  "Collapse all outline headings matching REGEXP in the buffer."
+  "Collapse all sections matching REGEXP in the buffer.
+Creates overlays that hide the body while keeping the heading
+visible."
   (save-excursion
     (goto-char (point-min))
     (while (re-search-forward regexp nil t)
-      (goto-char (match-beginning 0))
-      (outline-hide-subtree)
-      (forward-line 1))))
+      (let* ((heading-start (match-beginning 0))
+             (heading-end (save-excursion
+                            (goto-char heading-start)
+                            (end-of-line) (point)))
+             (section-end (save-excursion
+                            (goto-char heading-start)
+                            (claude-log--find-section-end))))
+        (when (< heading-end section-end)
+          (let ((ov (make-overlay heading-end section-end nil t)))
+            (overlay-put ov 'invisible 'claude-log-collapsed)
+            (overlay-put ov 'claude-log-section t)))
+        (goto-char section-end)))))
+
+(defun claude-log--hide-sections-matching (regexp)
+  "Completely hide all sections matching REGEXP using overlays.
+Hides both the heading and its body."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward regexp nil t)
+      (let* ((heading-start (match-beginning 0))
+             (section-end (save-excursion
+                            (goto-char heading-start)
+                            (claude-log--find-section-end))))
+        (when (< heading-start section-end)
+          (let ((ov (make-overlay heading-start section-end nil t)))
+            (overlay-put ov 'invisible 'claude-log-hidden)
+            (overlay-put ov 'claude-log-section t)))
+        (goto-char section-end)))))
 
 (defun claude-log--collapse-region (start end)
-  "Collapse or hide sections between START and END according to configuration."
+  "Collapse or hide new sections between START and END."
   (pcase claude-log-show-thinking
-    ('collapsed (claude-log--collapse-headings-in-region "^#### Thinking$" start end))
-    ('hidden (claude-log--hide-sections-in-region "^#### Thinking$" start end)))
+    ('collapsed (claude-log--collapse-headings-in-region
+                 "^#### Thinking$" start end))
+    ('hidden (claude-log--hide-sections-in-region
+              "^#### Thinking$" start end)))
   (pcase claude-log-show-tools
-    ('collapsed (claude-log--collapse-headings-in-region "^#### Tool" start end))
-    ('hidden (claude-log--hide-sections-in-region "^#### Tool" start end))))
+    ('collapsed (claude-log--collapse-headings-in-region
+                 "^#### Tool" start end))
+    ('hidden (claude-log--hide-sections-in-region
+              "^#### Tool" start end))))
 
 (defun claude-log--collapse-headings-in-region (regexp start end)
-  "Collapse outline headings matching REGEXP between START and END."
+  "Collapse sections matching REGEXP between START and END."
   (save-excursion
     (goto-char start)
     (while (re-search-forward regexp end t)
-      (goto-char (match-beginning 0))
-      (outline-hide-subtree)
-      (forward-line 1))))
-
-(defun claude-log--hide-sections-matching (regexp)
-  "Completely hide all sections matching REGEXP using invisible overlays.
-Hides both the heading and its body, unlike `outline-hide-subtree'
-which only hides the body."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((heading-re (concat "^\\(?:" outline-regexp "\\)")))
-      (while (re-search-forward regexp nil t)
-        (let* ((start (match-beginning 0))
-               (end (save-excursion
-                      (goto-char start)
-                      (forward-line 1)
-                      (if (re-search-forward heading-re nil t)
-                          (match-beginning 0)
-                        (point-max)))))
-          (let ((ov (make-overlay start end)))
-            (overlay-put ov 'invisible t)
-            (overlay-put ov 'claude-log-hidden t))
-          (goto-char end))))))
+      (let* ((heading-start (match-beginning 0))
+             (heading-end (save-excursion
+                            (goto-char heading-start)
+                            (end-of-line) (point)))
+             (section-end (save-excursion
+                            (goto-char heading-start)
+                            (claude-log--find-section-end))))
+        (when (< heading-end section-end)
+          (let ((ov (make-overlay heading-end section-end nil t)))
+            (overlay-put ov 'invisible 'claude-log-collapsed)
+            (overlay-put ov 'claude-log-section t)))
+        (goto-char section-end)))))
 
 (defun claude-log--hide-sections-in-region (regexp start end)
   "Completely hide sections matching REGEXP between START and END."
   (save-excursion
     (goto-char start)
-    (let ((heading-re (concat "^\\(?:" outline-regexp "\\)")))
-      (while (re-search-forward regexp end t)
-        (let* ((sec-start (match-beginning 0))
-               (sec-end (save-excursion
-                          (goto-char sec-start)
-                          (forward-line 1)
-                          (if (re-search-forward heading-re nil t)
-                              (match-beginning 0)
-                            (point-max)))))
-          (let ((ov (make-overlay sec-start sec-end)))
-            (overlay-put ov 'invisible t)
-            (overlay-put ov 'claude-log-hidden t))
-          (goto-char sec-end))))))
+    (while (re-search-forward regexp end t)
+      (let* ((heading-start (match-beginning 0))
+             (section-end (save-excursion
+                            (goto-char heading-start)
+                            (claude-log--find-section-end))))
+        (when (< heading-start section-end)
+          (let ((ov (make-overlay heading-start section-end nil t)))
+            (overlay-put ov 'invisible 'claude-log-hidden)
+            (overlay-put ov 'claude-log-section t)))
+        (goto-char section-end)))))
 
-(defun claude-log--remove-hidden-overlays ()
-  "Remove all `claude-log-hidden' overlays from the current buffer."
+(defun claude-log--remove-section-overlays ()
+  "Remove all section visibility overlays from the current buffer."
   (dolist (ov (overlays-in (point-min) (point-max)))
-    (when (overlay-get ov 'claude-log-hidden)
+    (when (overlay-get ov 'claude-log-section)
       (delete-overlay ov))))
 
 (defun claude-log-refresh ()
