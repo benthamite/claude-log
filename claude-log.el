@@ -291,7 +291,8 @@ Projects are sorted by most recent session timestamp."
             (ts (plist-get meta :timestamp))
             (date (claude-log--format-epoch-ms ts))
             (project (claude-log--short-project (plist-get meta :project)))
-            (display (string-trim (plist-get meta :display)))
+            (display (claude-log--normalize-whitespace
+                      (plist-get meta :display)))
             (display (claude-log--truncate-string display claude-log-display-width))
             (label (format "%s  %-20s  \"%s\"" date project display)))
        (cons label (plist-get meta :file))))
@@ -618,6 +619,10 @@ COLLECTION is a list of strings or an alist of (string . value)."
         '(metadata (display-sort-function . identity)
                    (cycle-sort-function . identity))
       (complete-with-action action collection string pred))))
+
+(defun claude-log--normalize-whitespace (str)
+  "Collapse all whitespace in STR into single spaces and trim."
+  (string-trim (replace-regexp-in-string "[\n\r\t ]+" " " (or str ""))))
 
 (defun claude-log--truncate-string (str max)
   "Truncate STR to MAX characters, appending ellipsis if needed."
