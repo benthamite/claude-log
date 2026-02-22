@@ -5,7 +5,7 @@
 ;; Author: Pablo Stafforini
 ;; URL: https://github.com/benthamite/claude-log
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (markdown-mode "2.6"))
 ;; Keywords: tools
 
 ;; This file is NOT part of GNU Emacs.
@@ -31,6 +31,7 @@
 ;;
 ;; Entry points:
 ;;   `claude-log-browse-sessions' - pick a session from history
+;;   `claude-log-search-sessions' - search across all sessions
 ;;   `claude-log-open-file'       - open a specific JSONL file
 
 ;;; Code:
@@ -40,6 +41,7 @@
 (require 'json)
 (require 'filenotify)
 (require 'outline)
+(require 'markdown-mode)
 
 ;;;;; Customization
 
@@ -84,6 +86,12 @@ a heading, `visible' shows them expanded."
   "Whether to watch the JSONL file for live updates."
   :type 'boolean)
 
+(defcustom claude-log-group-by-project t
+  "Whether to group sessions by project in the browser.
+When non-nil, `claude-log-browse-sessions' first prompts for a
+project, then for a session within that project."
+  :type 'boolean)
+
 ;;;;; Internal variables
 
 (defvar-local claude-log--source-file nil
@@ -108,13 +116,14 @@ a heading, `visible' shows them expanded."
 
 ;;;###autoload
 (defun claude-log-browse-sessions ()
-  "Browse Claude Code sessions and open the selected one."
+  "Browse Claude Code sessions and open the selected one.
+When `claude-log-group-by-project' is non-nil, first prompts for
+a project, then for a session within that project."
   (interactive)
-  (let* ((sessions (claude-log--read-sessions))
-         (candidates (claude-log--build-candidates sessions))
-         (selected (completing-read "Session: " candidates nil t))
-         (file (alist-get selected candidates nil nil #'equal)))
-    (claude-log-open-file file)))
+  (let ((sessions (claude-log--read-sessions)))
+    (if claude-log-group-by-project
+        (claude-log--browse-grouped sessions)
+      (claude-log--browse-flat sessions))))
 
 ;;;###autoload
 (defun claude-log-open-file (file)
@@ -123,12 +132,71 @@ a heading, `visible' shows them expanded."
   (let* ((file (expand-file-name file))
          (buf (generate-new-buffer (claude-log--buffer-name file))))
     (with-current-buffer buf
-      (claude-log-mode)
+      (claude-log--activate-mode)
       (setq claude-log--source-file file)
       (claude-log--render-full)
       (when (and claude-log-live-update (not claude-log--watcher))
         (claude-log--start-watcher)))
     (pop-to-buffer buf)))
+
+(defun claude-log--activate-mode ()
+  "Activate `claude-log-mode' with parent mode hooks suppressed.
+Suppresses `markdown-mode-hook', `markdown-view-mode-hook', and
+flycheck's global-mode hook to prevent unwanted side effects."
+  (let ((markdown-mode-hook nil)
+        (markdown-view-mode-hook nil)
+        (after-change-major-mode-hook
+         (remq 'flycheck-global-mode-enable-in-buffers
+               after-change-major-mode-hook)))
+    (claude-log-mode)))
+
+;;;###autoload
+(defun claude-log-search-sessions (query)
+  "Search across all sessions for QUERY and open a matching one.
+Uses `grep' to efficiently search JSONL files, then presents
+matching sessions for selection."
+  (interactive "sSearch sessions: ")
+  (let* ((matching-files (claude-log--grep-session-files query))
+         (sessions (claude-log--read-sessions))
+         (matching-sessions (claude-log--filter-sessions-by-files
+                             sessions matching-files)))
+    (unless matching-sessions
+      (user-error "No sessions match \"%s\"" query))
+    (message "Found %d matching session(s)" (length matching-sessions))
+    (if claude-log-group-by-project
+        (claude-log--browse-grouped matching-sessions)
+      (claude-log--browse-flat matching-sessions))))
+
+;;;;; Session search
+
+(defun claude-log--grep-session-files (query)
+  "Return a list of JSONL file paths containing QUERY."
+  (let* ((projects-dir (expand-file-name "projects" claude-log-directory))
+         (default-directory projects-dir)
+         (output (claude-log--run-grep query projects-dir)))
+    (claude-log--parse-grep-output output)))
+
+(defun claude-log--run-grep (query dir)
+  "Run grep for QUERY across JSONL files in DIR, returning stdout."
+  (with-temp-buffer
+    (call-process "grep" nil t nil
+                  "-rlF" "-i" "--include=*.jsonl" query dir)
+    (buffer-string)))
+
+(defun claude-log--parse-grep-output (output)
+  "Parse grep OUTPUT into a list of absolute file paths."
+  (seq-filter (lambda (s) (not (string-empty-p s)))
+              (split-string output "\n" t)))
+
+(defun claude-log--filter-sessions-by-files (sessions files)
+  "Filter SESSIONS to those whose file appears in FILES."
+  (let ((file-set (make-hash-table :test #'equal)))
+    (dolist (f files)
+      (puthash (expand-file-name f) t file-set))
+    (seq-filter (lambda (session)
+                  (gethash (expand-file-name (plist-get (cdr session) :file))
+                           file-set))
+                sessions)))
 
 ;;;;; Session browser
 
@@ -168,6 +236,42 @@ Each value is a plist (:display :timestamp :project :file)."
             (let ((file (expand-file-name (concat session-id ".jsonl") dir)))
               (when (file-exists-p file)
                 (cl-return file)))))))))
+
+(defun claude-log--browse-flat (sessions)
+  "Present all SESSIONS in a single `completing-read'."
+  (let* ((candidates (claude-log--build-candidates sessions))
+         (selected (completing-read "Session: " candidates nil t))
+         (file (alist-get selected candidates nil nil #'equal)))
+    (claude-log-open-file file)))
+
+(defun claude-log--browse-grouped (sessions)
+  "Present SESSIONS grouped by project: first pick project, then session."
+  (let* ((grouped (claude-log--group-by-project sessions))
+         (project-names (mapcar #'car grouped))
+         (project (completing-read "Project: " project-names nil t))
+         (project-sessions (alist-get project grouped nil nil #'equal))
+         (candidates (claude-log--build-candidates project-sessions))
+         (selected (completing-read "Session: " candidates nil t))
+         (file (alist-get selected candidates nil nil #'equal)))
+    (claude-log-open-file file)))
+
+(defun claude-log--group-by-project (sessions)
+  "Group SESSIONS into an alist of (project-name . sessions).
+Projects are sorted by most recent session timestamp."
+  (let ((groups (make-hash-table :test #'equal)))
+    (dolist (session sessions)
+      (let* ((project (claude-log--short-project
+                       (plist-get (cdr session) :project)))
+             (existing (gethash project groups)))
+        (puthash project (append existing (list session)) groups)))
+    (let (result)
+      (maphash (lambda (project sessions)
+                 (push (cons project sessions) result))
+               groups)
+      (sort result (lambda (a b)
+                     (let ((ts-a (plist-get (cdadr a) :timestamp))
+                           (ts-b (plist-get (cdadr b) :timestamp)))
+                       (> (or ts-a 0) (or ts-b 0))))))))
 
 (defun claude-log--build-candidates (sessions)
   "Build an alist of (display-string . file-path) from SESSIONS."
@@ -351,7 +455,7 @@ Each value is a plist (:display :timestamp :project :file)."
       summary)))
 
 (defun claude-log--summarize-tool-input-by-name (name input)
-  "Return a NAME-specific summary of tool INPUT."
+  "Return a summary of tool INPUT specific to tool NAME."
   (pcase name
     ("Read" (claude-log--summarize-read input))
     ("Write" (claude-log--summarize-write input))
@@ -465,24 +569,17 @@ Each value is a plist (:display :timestamp :project :file)."
     map)
   "Keymap for `claude-log-mode'.")
 
-(define-derived-mode claude-log-mode special-mode "Claude-Log"
+(define-derived-mode claude-log-mode markdown-view-mode "Claude-Log"
   "Major mode for viewing Claude Code conversation logs.
 \\{claude-log-mode-map}"
   (setq-local outline-regexp "##+ ")
   (setq-local outline-level #'claude-log--outline-level)
   (outline-minor-mode 1)
-  (claude-log--maybe-enable-markdown-fontification)
   (add-hook 'kill-buffer-hook #'claude-log--cleanup nil t))
 
 (defun claude-log--outline-level ()
   "Return the outline level based on the number of `#' characters."
   (- (match-end 0) (match-beginning 0) 1))
-
-(defun claude-log--maybe-enable-markdown-fontification ()
-  "Enable `markdown-mode' font-lock if available."
-  (when (require 'markdown-mode nil t)
-    (setq-local font-lock-defaults '(markdown-mode-font-lock-keywords))
-    (font-lock-mode 1)))
 
 (defun claude-log--cleanup ()
   "Clean up file watcher when buffer is killed."
@@ -499,7 +596,7 @@ Each value is a plist (:display :timestamp :project :file)."
           (file-attribute-size (file-attributes claude-log--source-file)))))
 
 (defun claude-log--start-watcher ()
-  "Start watching the JSONL file for changes."
+  "Start watching the JSONL file for change events."
   (setq claude-log--watcher
         (file-notify-add-watch
          claude-log--source-file '(change)
