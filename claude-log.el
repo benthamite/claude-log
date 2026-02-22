@@ -418,15 +418,13 @@ Returns the path to the rendered file."
   "Open the rendered .md file for SESSION-ID.
 METADATA is a plist with :file, :timestamp, :project, :display."
   (let* ((rendered-path (claude-log--ensure-rendered session-id metadata))
-         (buf (generate-new-buffer (claude-log--buffer-name rendered-path))))
+         (buf (find-file-noselect rendered-path)))
     (with-current-buffer buf
       (claude-log--activate-mode)
       (setq claude-log--source-file (plist-get metadata :file)
             claude-log--session-id session-id
             claude-log--rendered-file rendered-path
             claude-log--session-project (plist-get metadata :project))
-      (let ((inhibit-read-only t))
-        (insert-file-contents rendered-path))
       (claude-log--record-offset)
       (when (and claude-log-live-update (not claude-log--watcher))
         (claude-log--start-watcher))
@@ -870,11 +868,6 @@ COLLECTION is a list of strings or an alist of (string . value)."
   (if (<= (length str) max)
       str
     (concat (substring str 0 max) "…")))
-
-(defun claude-log--buffer-name (file)
-  "Generate a buffer name for JSONL FILE."
-  (format "*claude-log: %s*"
-          (file-name-sans-extension (file-name-nondirectory file))))
 
 ;;;;; Major mode
 
