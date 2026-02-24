@@ -257,23 +257,40 @@ flycheck's global-mode hook to prevent unwanted side effects."
 
 (defun claude-log--read-index ()
   "Read the index hash table from disk.
-Returns an empty hash table if the file does not exist."
+Returns an empty hash table if the file does not exist or is corrupt."
   (let ((file (claude-log--index-file)))
-    (if (file-exists-p file)
-        (with-temp-buffer
-          (insert-file-contents file)
-          (read (current-buffer)))
-      (make-hash-table :test #'equal))))
+    (condition-case err
+        (if (file-exists-p file)
+            (let ((obj (with-temp-buffer
+                         (insert-file-contents file)
+                         (read (current-buffer)))))
+              (if (hash-table-p obj) obj
+                (message "claude-log: index file corrupt (not a hash table), rebuilding")
+                (make-hash-table :test #'equal)))
+          (make-hash-table :test #'equal))
+      (error
+       (message "claude-log: failed to read index: %s" (error-message-string err))
+       (make-hash-table :test #'equal)))))
 
 (defun claude-log--write-index (index)
-  "Write INDEX hash table to disk."
-  (let ((file (claude-log--index-file)))
-    (make-directory (file-name-directory file) t)
-    (with-temp-file file
-      (let ((print-level nil)
-            (print-length nil))
-        (prin1 index (current-buffer))
-        (insert "\n")))))
+  "Write INDEX hash table to disk atomically.
+Writes to a temporary file first, then renames to avoid corruption
+if Emacs crashes mid-write."
+  (let* ((file (claude-log--index-file))
+         (dir (file-name-directory file))
+         (tmp (make-temp-file (expand-file-name "_index-tmp" dir) nil ".el")))
+    (make-directory dir t)
+    (condition-case err
+        (progn
+          (with-temp-file tmp
+            (let ((print-level nil)
+                  (print-length nil))
+              (prin1 index (current-buffer))
+              (insert "\n")))
+          (rename-file tmp file t))
+      (error
+       (ignore-errors (delete-file tmp))
+       (signal (car err) (cdr err))))))
 
 (defun claude-log--index-update (session-id rendered-path jsonl-size)
   "Update the index entry for SESSION-ID with RENDERED-PATH and JSONL-SIZE."
@@ -447,7 +464,7 @@ Each value is a plist (:display :timestamp :project :file)."
       (user-error "History file not found: %s" history-file))
     (dolist (entry (claude-log--parse-jsonl-file history-file))
       (let ((sid (plist-get entry :sessionId)))
-        (when (and sid (not (gethash sid sessions)))
+        (when sid
           (puthash sid entry sessions))))
     (let (result)
       (maphash
@@ -461,8 +478,10 @@ Each value is a plist (:display :timestamp :project :file)."
                  result)))
        sessions)
       (sort result (lambda (a b)
-                     (> (or (plist-get (cdr a) :timestamp) 0)
-                        (or (plist-get (cdr b) :timestamp) 0)))))))
+                     (let ((ts-a (plist-get (cdr a) :timestamp))
+                           (ts-b (plist-get (cdr b) :timestamp)))
+                       (> (if (numberp ts-a) ts-a 0)
+                          (if (numberp ts-b) ts-b 0))))))))
 
 (defun claude-log--find-session-file (session-id)
   "Find the JSONL file for SESSION-ID under the projects directory."
@@ -519,7 +538,8 @@ Projects are sorted by most recent session timestamp."
       (sort result (lambda (a b)
                      (let ((ts-a (plist-get (cdadr a) :timestamp))
                            (ts-b (plist-get (cdadr b) :timestamp)))
-                       (> (or ts-a 0) (or ts-b 0))))))))
+                       (> (if (numberp ts-a) ts-a 0)
+                          (if (numberp ts-b) ts-b 0))))))))
 
 (defun claude-log--build-candidates (sessions)
   "Build an alist of (display-string . (session-id . metadata)) from SESSIONS."
@@ -552,10 +572,15 @@ Projects are sorted by most recent session timestamp."
 ;;;;; JSONL parsing
 
 (defun claude-log--parse-jsonl-file (file)
-  "Parse FILE as JSONL, returning a list of plists."
+  "Parse FILE as JSONL, returning a list of plists.
+Malformed lines are silently skipped."
   (let ((lines (claude-log--read-file-lines file)))
-    (mapcar #'claude-log--parse-json-line
-            (seq-filter (lambda (s) (not (string-empty-p s))) lines))))
+    (delq nil
+          (mapcar (lambda (line)
+                    (condition-case nil
+                        (claude-log--parse-json-line line)
+                      (error nil)))
+                  (seq-filter (lambda (s) (not (string-empty-p s))) lines)))))
 
 (defun claude-log--read-file-lines (file)
   "Read FILE and return a list of non-empty lines."
@@ -636,17 +661,19 @@ known system XML tag."
 
 (defun claude-log--render-entry (entry)
   "Render a single conversation ENTRY to a Markdown string."
-  (let* ((message (plist-get entry :message))
-         (timestamp (plist-get entry :timestamp))
-         (role (plist-get message :role))
-         (content (plist-get message :content))
-         (time-str (claude-log--format-iso-timestamp timestamp)))
-    (cond
-     ((equal role "user")
-      (claude-log--render-user-turn content time-str))
-     ((equal role "assistant")
-      (claude-log--render-assistant-turn content time-str))
-     (t ""))))
+  (let ((message (plist-get entry :message)))
+    (if (not message)
+        ""
+      (let* ((timestamp (plist-get entry :timestamp))
+             (role (plist-get message :role))
+             (content (plist-get message :content))
+             (time-str (claude-log--format-iso-timestamp timestamp)))
+        (cond
+         ((equal role "user")
+          (claude-log--render-user-turn content time-str))
+         ((equal role "assistant")
+          (claude-log--render-assistant-turn content time-str))
+         (t ""))))))
 
 (defun claude-log--render-user-turn (content time-str)
   "Render a user turn with CONTENT and TIME-STR.
@@ -820,15 +847,19 @@ Returns an empty string if CONTENT produces no visible output."
     (format "> **%s**: %s" type desc)))
 
 (defun claude-log--summarize-tool-input-generic (input)
-  "Return a generic summary of tool INPUT plist."
-  (let ((parts '()))
-    (cl-loop for (key val) on input by #'cddr
-             do (let* ((k (substring (symbol-name key) 1))
-                       (v (claude-log--truncate-string
-                           (format "%s" val)
-                           claude-log-max-tool-input-length)))
-                  (push (format "> **%s**: %s" k v) parts)))
-    (string-join (nreverse parts) "\n")))
+  "Return a generic summary of tool INPUT plist.
+Returns an empty string if INPUT is not a proper plist."
+  (if (not (and (listp input) (cl-evenp (length input))))
+      ""
+    (let ((parts '()))
+      (cl-loop for (key val) on input by #'cddr
+               when (keywordp key)
+               do (let* ((k (substring (symbol-name key) 1))
+                         (v (claude-log--truncate-string
+                             (format "%s" val)
+                             claude-log-max-tool-input-length)))
+                    (push (format "> **%s**: %s" k v) parts)))
+      (string-join (nreverse parts) "\n"))))
 
 ;;;;; Timestamps
 
@@ -929,20 +960,30 @@ COLLECTION is a list of strings or an alist of (string . value)."
 
 (defun claude-log--handle-file-change ()
   "Handle a change notification on the JSONL file."
-  (let* ((new-size (file-attribute-size
-                    (file-attributes claude-log--source-file)))
-         (at-end (>= (point) (point-max))))
-    (when (and new-size (> new-size claude-log--file-offset))
-      (let ((new-text (claude-log--read-bytes-from
-                       claude-log--source-file claude-log--file-offset new-size)))
-        (setq claude-log--file-offset new-size)
-        (claude-log--process-incremental-text new-text at-end)))))
+  (when (and claude-log--source-file
+             (file-exists-p claude-log--source-file))
+    (let* ((new-size (file-attribute-size
+                      (file-attributes claude-log--source-file)))
+           (at-end (>= (point) (point-max))))
+      (when (and new-size (> new-size claude-log--file-offset))
+        (condition-case err
+            (let ((new-text (claude-log--read-bytes-from
+                             claude-log--source-file
+                             claude-log--file-offset new-size)))
+              (setq claude-log--file-offset new-size)
+              (claude-log--process-incremental-text new-text at-end))
+          (error
+           (message "claude-log: error reading incremental update: %s"
+                    (error-message-string err))))))))
 
 (defun claude-log--read-bytes-from (file start end)
-  "Read bytes from FILE between START and END offsets."
+  "Read bytes from FILE between START and END offsets.
+Uses raw-text coding to avoid multi-byte decoding issues at
+chunk boundaries, then decodes the result as UTF-8."
   (with-temp-buffer
-    (insert-file-contents file nil start end)
-    (buffer-string)))
+    (let ((coding-system-for-read 'raw-text))
+      (insert-file-contents file nil start end))
+    (decode-coding-region (point-min) (point-max) 'utf-8 t)))
 
 (defun claude-log--process-incremental-text (text at-end)
   "Parse new TEXT from the JSONL file and append rendered entries.
@@ -1037,7 +1078,9 @@ Returns the position, or nil."
   "Expand all sections."
   (interactive)
   (let ((inhibit-read-only t))
-    (outline-show-all)
+    (if (fboundp 'outline-show-all)
+        (outline-show-all)
+      (outline-flag-region (point-min) (point-max) nil))
     (claude-log--remove-section-overlays)))
 
 (defun claude-log--collapse-as-configured ()
@@ -1054,20 +1097,17 @@ Returns the position, or nil."
 (defun claude-log--find-section-end ()
   "Find the end of the #### section at point.
 Point must be at the beginning of a #### heading line.
-The section includes the heading, body paragraph, and trailing
-blank lines.  Returns the position after the section."
+The section extends until the next heading (any level) or the
+next horizontal rule (`---'), whichever comes first.  Trailing
+blank lines before that boundary are included."
   (save-excursion
     (forward-line 1)
-    ;; Skip blank lines between heading and body.
-    (while (and (not (eobp)) (looking-at-p "^[[:space:]]*$"))
-      (forward-line 1))
-    ;; Skip body lines (non-blank).
-    (while (and (not (eobp)) (not (looking-at-p "^[[:space:]]*$")))
-      (forward-line 1))
-    ;; Skip trailing blank lines.
-    (while (and (not (eobp)) (looking-at-p "^[[:space:]]*$"))
-      (forward-line 1))
-    (point)))
+    (let ((limit (or (save-excursion
+                       (when (re-search-forward "^\\(##\\|---$\\)" nil t)
+                         (match-beginning 0)))
+                     (point-max))))
+      (goto-char limit)
+      limit)))
 
 (defun claude-log--collapse-headings-matching (regexp)
   "Collapse all sections matching REGEXP in the buffer.
@@ -1172,7 +1212,9 @@ preceding separator."
                                 "^---$" (max (point-min) (- heading-bol 5)) t)
                                (match-beginning 0)
                              heading-bol)))
-             (content-start (save-excursion (end-of-line) (1+ (point))))
+             (content-start (save-excursion
+                              (end-of-line)
+                              (min (1+ (point)) (point-max))))
              (turn-end (save-excursion
                          (goto-char content-start)
                          (if (re-search-forward "^---$" nil t)
