@@ -3,6 +3,8 @@
 
 Browse [[https://docs.anthropic.com/en/docs/claude-code][Claude Code]] conversation logs in Emacs.
 
+The development repository is on [[https://github.com/benthamite/claude-log][GitHub]].
+
 Claude Code stores complete conversation transcripts as JSONL files under =~/.claude/projects/=. This package renders them as readable Markdown files under =~/.claude/rendered/=, so that standard tools (=consult-ripgrep=, Dired, =grep=) work natively on readable content.
 
 * Features
@@ -188,3 +190,20 @@ The package requires =markdown-mode= to be installed and loadable at compile tim
 * License
 
 GPL-3.0-or-later.
+
+* Indices
+:PROPERTIES:
+:CUSTOM_ID: h:indices
+:END:
+
+** Function index
+:PROPERTIES:
+:INDEX: fn
+:CUSTOM_ID: h:function-index
+:END:
+
+** Variable index
+:PROPERTIES:
+:INDEX: vr
+:CUSTOM_ID: h:variable-index
+:END:

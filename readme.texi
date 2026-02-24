@@ -1,0 +1,400 @@
+\input texinfo    @c -*- texinfo -*-
+@c %**start of header
+@setfilename readme.info
+@settitle claude-log
+@documentencoding UTF-8
+@documentlanguage en
+@c %**end of header
+
+@dircategory Misc
+@direntry
+* (readme).             claude-log.
+@end direntry
+
+@finalout
+@titlepage
+@title claude-log
+@author Pablo Stafforini
+@end titlepage
+
+@contents
+
+@ifnottex
+@node Top
+@top claude-log
+
+Browse @uref{https://docs.anthropic.com/en/docs/claude-code, Claude Code} conversation logs in Emacs.
+
+The development repository is on @uref{https://github.com/benthamite/claude-log, GitHub}.
+
+Claude Code stores complete conversation transcripts as JSONL files under @samp{~/.claude/projects/}. This package renders them as readable Markdown files under @samp{~/.claude/rendered/}, so that standard tools (@samp{consult-ripgrep}, Dired, @samp{grep}) work natively on readable content.
+
+@end ifnottex
+
+@menu
+* Features::
+* Requirements::
+* Installation::
+* Usage::
+* Configuration::
+* How it works::
+* Troubleshooting::
+* License::
+* Indices::
+
+@detailmenu
+--- The Detailed Node Listing ---
+
+Installation
+
+* Manual::
+* With @samp{use-package}::
+
+Usage
+
+* Browsing sessions::
+* Opening the latest session::
+* Searching sessions::
+* Bulk rendering::
+* Opening a file directly::
+* Navigation::
+
+How it works
+
+* Rendered directory::
+* Sync strategy::
+* Rendering::
+
+Troubleshooting
+
+* No sessions found::
+* Rendered files not updating::
+* Live updates not working::
+* Byte-compilation warnings::
+
+Indices
+
+* Function index::
+* Variable index::
+
+@end detailmenu
+@end menu
+
+@node Features
+@chapter Features
+
+@itemize
+@item
+@strong{Session browser}: browse all sessions, grouped by project or as a flat list, sorted most-recent-first.
+@item
+@strong{Rendered Markdown mirror}: sessions are lazily rendered to @samp{.md} files with readable filenames, organized by project.
+@item
+@strong{Full-text search}: use @samp{consult-ripgrep} or any grep tool directly on the rendered directory.
+@item
+@strong{Live updates}: buffers and @samp{.md} files update in real time via @samp{file-notify} as conversations progress.
+@item
+@strong{Outline navigation}: fold/unfold tool calls, thinking blocks, and tool results using @samp{outline-minor-mode}.
+@item
+@strong{Smart tool summaries}: each tool call is summarized by its most relevant input (file path for Read/Write, command for Bash, pattern for Grep, etc.).
+@end itemize
+
+@node Requirements
+@chapter Requirements
+
+@itemize
+@item
+Emacs 29.1 or later.
+@item
+@uref{https://jblevins.org/projects/markdown-mode/, markdown-mode} 2.6 or later.
+@end itemize
+
+@node Installation
+@chapter Installation
+
+@menu
+* Manual::
+* With @samp{use-package}::
+@end menu
+
+@node Manual
+@section Manual
+
+Clone this repository to your Emacs load path and add the following to your @samp{init.el} file:
+
+@lisp
+(require 'claude-log)
+@end lisp
+
+@node With @samp{use-package}
+@section With @samp{use-package}
+
+If you use @samp{use-package}, add one of the following snippets to your @samp{init.el} file:
+
+@lisp
+;; with vc
+(use-package claude-log
+  :vc (:url "https://github.com/benthamite/claude-log"))
+
+;; with elpaca
+(use-package claude-log
+  :ensure (:host github :repo "benthamite/claude-log"))
+
+;; with straight
+(use-package claude-log
+  :straight (:host github :repo "benthamite/claude-log"))
+
+;; with quelpa
+(use-package claude-log
+  :quelpa (claude-log :fetcher github :repo "benthamite/claude-log"))
+@end lisp
+
+@node Usage
+@chapter Usage
+
+@menu
+* Browsing sessions::
+* Opening the latest session::
+* Searching sessions::
+* Bulk rendering::
+* Opening a file directly::
+* Navigation::
+@end menu
+
+@node Browsing sessions
+@section Browsing sessions
+
+@example
+M-x claude-log-browse-sessions
+@end example
+
+When @samp{claude-log-group-by-project} is non-nil (the default), this first prompts for a project, then for a session within that project. Sessions are displayed as:
+
+@example
+2026-02-22 14:06  my-project  "Fix the authentication bug in..."
+@end example
+
+The selected session is lazily rendered to a @samp{.md} file if needed, then opened in a buffer.
+
+@node Opening the latest session
+@section Opening the latest session
+
+@example
+M-x claude-log-open-latest
+@end example
+
+Opens the most recent session directly, without prompting.
+
+@node Searching sessions
+@section Searching sessions
+
+Use @samp{consult-ripgrep} (or any grep tool) on the rendered directory:
+
+@example
+M-x claude-log-open-rendered-directory
+@end example
+
+This opens @samp{~/.claude/rendered/} in Dired. Since rendered files are plain Markdown, standard search tools work natively -- no special integration needed.
+
+@node Bulk rendering
+@section Bulk rendering
+
+@example
+M-x claude-log-sync-all
+@end example
+
+Renders all unrendered or stale sessions. Uses timers to avoid blocking Emacs.
+
+@node Opening a file directly
+@section Opening a file directly
+
+@example
+M-x claude-log-open-file
+@end example
+
+Opens a specific JSONL file by path. Useful for automation or when you know the exact file.
+
+@node Navigation
+@section Navigation
+
+@multitable {aaaaa} {aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+@headitem Key
+@tab Command
+@tab Description
+@item @samp{n}
+@tab @samp{claude-log-next-turn}
+@tab Jump to the next User/Assistant heading
+@item @samp{p}
+@tab @samp{claude-log-previous-turn}
+@tab Jump to the previous heading
+@item @samp{TAB}
+@tab @samp{claude-log-toggle-section}
+@tab Toggle fold of section at point
+@item @samp{C}
+@tab @samp{claude-log-collapse-all-tools}
+@tab Collapse all tool/thinking sections
+@item @samp{E}
+@tab @samp{claude-log-expand-all}
+@tab Expand all sections
+@item @samp{g}
+@tab @samp{claude-log-refresh}
+@tab Re-render the buffer from scratch
+@item @samp{w}
+@tab @samp{claude-log-copy-turn}
+@tab Copy the current turn to the kill ring
+@item @samp{q}
+@tab @samp{quit-window}
+@tab Close the buffer
+@end multitable
+
+@node Configuration
+@chapter Configuration
+
+All user options belong to the @samp{claude-log} customization group. You can browse them interactively with @samp{M-x customize-group RET claude-log RET}.
+
+@multitable {aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+@headitem Option
+@tab Default
+@tab Description
+@item @samp{claude-log-directory}
+@tab @samp{"~/.claude"}
+@tab Root directory of Claude Code configuration.
+@item @samp{claude-log-rendered-directory}
+@tab @samp{"~/.claude/rendered"}
+@tab Directory where rendered Markdown files are stored.
+@item @samp{claude-log-slug-max-length}
+@tab @samp{50}
+@tab Maximum length of the slug portion of rendered filenames.
+@item @samp{claude-log-show-thinking}
+@tab @samp{collapsed}
+@tab How to display thinking blocks: @samp{hidden}, @samp{collapsed}, @samp{visible}.
+@item @samp{claude-log-show-tools}
+@tab @samp{collapsed}
+@tab How to display tool sections: @samp{hidden}, @samp{collapsed}, @samp{visible}.
+@item @samp{claude-log-timestamp-format}
+@tab @samp{"%Y-%m-%d %H:%M:%S"}
+@tab Format string for timestamps.
+@item @samp{claude-log-max-tool-input-length}
+@tab @samp{200}
+@tab Max characters for tool input summaries.
+@item @samp{claude-log-max-tool-result-length}
+@tab @samp{500}
+@tab Max characters for tool result content.
+@item @samp{claude-log-live-update}
+@tab @samp{t}
+@tab Watch the JSONL file for real-time updates.
+@item @samp{claude-log-group-by-project}
+@tab @samp{t}
+@tab Group sessions by project in the browser.
+@item @samp{claude-log-display-width}
+@tab @samp{60}
+@tab Max width of the first-message column in the session browser.
+@end multitable
+
+@node How it works
+@chapter How it works
+
+Claude Code stores conversation data in two places:
+
+@enumerate
+@item
+@samp{~/.claude/history.jsonl}: a global index mapping session IDs to projects and timestamps.
+@item
+@samp{~/.claude/projects/<encoded-path>/<uuid>.jsonl}: one file per session, containing all messages as JSON lines.
+@end enumerate
+
+@menu
+* Rendered directory::
+* Sync strategy::
+* Rendering::
+@end menu
+
+@node Rendered directory
+@section Rendered directory
+
+This package maintains a mirror directory of pre-rendered Markdown files:
+
+@example
+~/.claude/rendered/
+  tango-wiki/
+    2026-02-04_14-06_fix-the-authentication-bug.md
+    2026-02-05_09-22_refactor-database-schema.md
+  dotfiles/
+    2026-02-22_11-56_redesign-claude-log-package.md
+  _index.el
+@end example
+
+Each @samp{.md} file contains HTML-comment front matter (session ID, source path, rendered timestamp, JSONL size) followed by the full conversation rendered as Markdown.
+
+@node Sync strategy
+@section Sync strategy
+
+@itemize
+@item
+@strong{Lazy by default}: rendering happens on first access via @samp{claude-log-browse-sessions} or @samp{claude-log-open-file}. The package checks whether the @samp{.md} file exists and is up-to-date (by comparing JSONL size against the index). If missing or stale, it renders from scratch.
+@item
+@strong{Bulk sync}: @samp{claude-log-sync-all} renders all unrendered/stale sessions via timers (non-blocking).
+@item
+@strong{Live updates}: for active sessions, a @samp{file-notify} watcher detects JSONL changes and appends new entries to both the @samp{.md} file on disk and the open buffer.
+@end itemize
+
+@node Rendering
+@section Rendering
+
+Each JSONL entry has a @samp{type} field (@samp{user}, @samp{assistant}, @samp{progress}, @samp{system}, or @samp{file-history-snapshot}). The package filters to @samp{user} and @samp{assistant} entries, further excluding system-generated messages (tool notifications, command output, etc.), and renders them as Markdown with @samp{##} headings for turns and @samp{####} headings for tool calls and thinking blocks.
+
+The rendered buffer uses @samp{markdown-view-mode} as its parent mode for fontification, with @samp{outline-minor-mode} for section folding.
+
+@node Troubleshooting
+@chapter Troubleshooting
+
+@menu
+* No sessions found::
+* Rendered files not updating::
+* Live updates not working::
+* Byte-compilation warnings::
+@end menu
+
+@node No sessions found
+@section No sessions found
+
+Ensure that @samp{claude-log-directory} points to the correct Claude Code configuration directory (default @samp{~/.claude}). The package reads @samp{history.jsonl} in that directory and looks for session files under @samp{projects/}.
+
+@node Rendered files not updating
+@section Rendered files not updating
+
+If a rendered file appears stale, press @samp{g} (@samp{claude-log-refresh}) in the buffer to force a full re-render. You can also delete the index file (@samp{~/.claude/rendered/_index.el}) to force re-rendering of all sessions on next access.
+
+@node Live updates not working
+@section Live updates not working
+
+Verify that @samp{claude-log-live-update} is set to @samp{t}. Live updates rely on @samp{file-notify}, which requires OS-level file watching support. On some systems (e.g., remote filesystems via TRAMP), file notifications may not be available.
+
+@node Byte-compilation warnings
+@section Byte-compilation warnings
+
+The package requires @samp{markdown-mode} to be installed and loadable at compile time. Ensure it is on your @samp{load-path} before byte-compiling.
+
+@node License
+@chapter License
+
+GPL-3.0-or-later.
+
+@node Indices
+@chapter Indices
+
+@menu
+* Function index::
+* Variable index::
+@end menu
+
+@node Function index
+@section Function index
+
+@printindex fn
+
+@node Variable index
+@section Variable index
+
+@printindex vr
+
+@bye
