@@ -108,6 +108,14 @@ M-x claude-log-open-file
 
 Opens a specific JSONL file by path. Useful for automation or when you know the exact file.
 
+** Resuming a session
+
+#+begin_example
+M-x claude-log-resume-session
+#+end_example
+
+Opens Claude Code and resumes the session displayed in the current buffer. Requires the [[https://github.com/stevemolitor/claude-code.el][claude-code]] package.
+
 ** Navigation
 
 | Key   | Command                         | Description                             |
@@ -119,6 +127,7 @@ Opens a specific JSONL file by path. Useful for automation or when you know the 
 | =E=   | =claude-log-expand-all=         | Expand all sections                     |
 | =g=   | =claude-log-refresh=            | Re-render the buffer from scratch       |
 | =w=   | =claude-log-copy-turn=          | Copy the current turn to the kill ring  |
+| =r=   | =claude-log-resume-session=     | Resume the session in Claude Code       |
 | =q=   | =quit-window=                   | Close the buffer                        |
 
 * Configuration

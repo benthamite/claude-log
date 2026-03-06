@@ -36,6 +36,7 @@
 ;;   `claude-log-open-rendered-directory' - browse rendered files in Dired
 ;;   `claude-log-sync-all'               - render all unrendered/stale sessions
 ;;   `claude-log-open-file'              - open a specific JSONL file
+;;   `claude-log-resume-session'         - resume session in Claude Code
 
 ;;; Code:
 
