@@ -1293,6 +1293,7 @@ preceding separator."
 ;;;;; Resume session
 
 (declare-function claude-code--start "claude-code")
+(declare-function claude-code--directory "claude-code")
 
 (defun claude-log--extract-session-id-from-buffer ()
   "Extract session ID from the front-matter comment of the current buffer."
@@ -1310,12 +1311,15 @@ preceding separator."
                         (claude-log--extract-session-id-from-buffer))))
     (unless session-id
       (user-error "No session ID found in current buffer"))
-    (let ((default-directory (if (and claude-log--session-project
-                                     (not (string-empty-p claude-log--session-project))
-                                     (file-directory-p claude-log--session-project))
-                                claude-log--session-project
-                              default-directory)))
-      (claude-code--start nil (list "--resume" session-id)))))
+    (let ((project-dir (when (and claude-log--session-project
+                                  (not (string-empty-p claude-log--session-project))
+                                  (file-directory-p claude-log--session-project))
+                         claude-log--session-project)))
+      (cl-letf (((symbol-function 'claude-code--directory)
+                 (if project-dir
+                     (lambda () project-dir)
+                   #'claude-code--directory)))
+        (claude-code--start nil (list "--resume" session-id))))))
 
 (provide 'claude-log)
 ;;; claude-log.el ends here
