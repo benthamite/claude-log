@@ -1302,6 +1302,27 @@ preceding separator."
     (when (re-search-forward "<!-- session: \\([^ ]+\\) -->" nil t)
       (match-string 1))))
 
+(defun claude-log--lookup-session-project (session-id)
+  "Look up the project directory for SESSION-ID in history.jsonl."
+  (let ((history-file (expand-file-name "history.jsonl" claude-log-directory)))
+    (when (file-exists-p history-file)
+      (catch 'found
+        (dolist (entry (claude-log--parse-jsonl-file history-file))
+          (when (equal (plist-get entry :sessionId) session-id)
+            (throw 'found (plist-get entry :project))))))))
+
+(defun claude-log--session-project-directory (session-id)
+  "Return the project directory for SESSION-ID.
+Try the buffer-local variable first, then fall back to history.jsonl."
+  (or (and claude-log--session-project
+           (not (string-empty-p claude-log--session-project))
+           (file-directory-p claude-log--session-project)
+           claude-log--session-project)
+      (when-let* ((project (claude-log--lookup-session-project session-id)))
+        (and (not (string-empty-p project))
+             (file-directory-p project)
+             project))))
+
 (defun claude-log-resume-session ()
   "Resume the Claude Code session for the current buffer."
   (interactive)
@@ -1311,10 +1332,7 @@ preceding separator."
                         (claude-log--extract-session-id-from-buffer))))
     (unless session-id
       (user-error "No session ID found in current buffer"))
-    (let ((project-dir (when (and claude-log--session-project
-                                  (not (string-empty-p claude-log--session-project))
-                                  (file-directory-p claude-log--session-project))
-                         claude-log--session-project)))
+    (let ((project-dir (claude-log--session-project-directory session-id)))
       (if project-dir
           (cl-letf (((symbol-function 'claude-code--directory)
                      (lambda () project-dir)))
