@@ -1315,10 +1315,10 @@ preceding separator."
                                   (not (string-empty-p claude-log--session-project))
                                   (file-directory-p claude-log--session-project))
                          claude-log--session-project)))
-      (cl-letf (((symbol-function 'claude-code--directory)
-                 (if project-dir
-                     (lambda () project-dir)
-                   #'claude-code--directory)))
+      (if project-dir
+          (cl-letf (((symbol-function 'claude-code--directory)
+                     (lambda () project-dir)))
+            (claude-code--start nil (list "--resume" session-id)))
         (claude-code--start nil (list "--resume" session-id))))))
 
 (provide 'claude-log)
