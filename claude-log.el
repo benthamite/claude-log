@@ -37,6 +37,7 @@
 ;;   `claude-log-sync-all'               - render all unrendered/stale sessions
 ;;   `claude-log-open-file'              - open a specific JSONL file
 ;;   `claude-log-resume-session'         - resume session in Claude Code
+;;   `claude-log-open-session-at-point'  - open log for session in current buffer
 
 ;;; Code:
 
@@ -1294,6 +1295,8 @@ preceding separator."
 
 (declare-function claude-code--start "claude-code")
 (declare-function claude-code--directory "claude-code")
+(declare-function claude-code--buffer-p "claude-code")
+(declare-function claude-code--extract-directory-from-buffer-name "claude-code")
 
 (defun claude-log--extract-session-id-from-buffer ()
   "Extract session ID from the front-matter comment of the current buffer."
@@ -1338,6 +1341,51 @@ Try the buffer-local variable first, then fall back to history.jsonl."
                      (lambda () project-dir)))
             (claude-code--start nil (list "--resume" session-id)))
         (claude-code--start nil (list "--resume" session-id))))))
+
+(defun claude-log--encode-project-path (directory)
+  "Encode DIRECTORY as Claude Code does for its projects subdirectory.
+Replaces `/' and `.' characters with `-'."
+  (replace-regexp-in-string
+   "[/.]" "-"
+   (directory-file-name (expand-file-name directory))))
+
+(defun claude-log--find-project-session-dir (directory)
+  "Find the Claude projects subdirectory for DIRECTORY.
+Try both the expanded path and its `file-truename'."
+  (let ((projects-dir (expand-file-name "projects" claude-log-directory)))
+    (cl-loop for path in (delete-dups
+                          (list (expand-file-name directory)
+                                (file-truename (expand-file-name directory))))
+             for encoded = (claude-log--encode-project-path path)
+             for dir = (expand-file-name encoded projects-dir)
+             when (file-directory-p dir) return dir)))
+
+(defun claude-log--find-latest-jsonl (directory)
+  "Find the most recently modified JSONL file in DIRECTORY."
+  (let ((files (directory-files directory t "\\.jsonl\\'"))
+        latest latest-time)
+    (dolist (f files)
+      (let ((mtime (float-time
+                    (file-attribute-modification-time (file-attributes f)))))
+        (when (or (null latest) (> mtime latest-time))
+          (setq latest f latest-time mtime))))
+    latest))
+
+;;;###autoload
+(defun claude-log-open-session-at-point ()
+  "Open the log for the Claude Code session in the current buffer.
+The current buffer must be a Claude Code terminal buffer."
+  (interactive)
+  (unless (require 'claude-code nil t)
+    (user-error "Package `claude-code' is required but not available"))
+  (unless (claude-code--buffer-p (current-buffer))
+    (user-error "Not in a Claude Code buffer"))
+  (let* ((dir (claude-code--extract-directory-from-buffer-name (buffer-name)))
+         (session-dir (and dir (claude-log--find-project-session-dir dir)))
+         (jsonl (and session-dir (claude-log--find-latest-jsonl session-dir))))
+    (unless jsonl
+      (user-error "No session log found for %s" (or dir "this buffer")))
+    (claude-log-open-file jsonl)))
 
 (provide 'claude-log)
 ;;; claude-log.el ends here
