@@ -167,6 +167,12 @@ When nil, defaults to `gptel-model'."
 (defvar claude-log--summarize-stop nil
   "When non-nil, stop summary generation after the current request.")
 
+(defvar claude-log--summarize-generation 0
+  "Generation counter for summary runs.
+Incremented each time `claude-log-summarize-sessions' starts a new run.
+Callbacks and timers from a previous generation are ignored, preventing
+stale callbacks from forking duplicate chains.")
+
 ;;;;; Entry points
 
 ;;;###autoload
@@ -1454,8 +1460,7 @@ If summary generation is already in progress, stop it instead."
     (user-error "Package `gptel' is required for summary generation"))
   (cond
    (claude-log--summarize-active
-    (setq claude-log--summarize-stop t)
-    (message "Summary generation will stop after the current request"))
+    (claude-log-stop-summarizing))
    (t
     (let* ((sessions (claude-log--read-sessions))
            (index (claude-log--read-index))
@@ -1464,79 +1469,98 @@ If summary generation is already in progress, stop it instead."
           (message "All %d sessions already have summaries" (length sessions))
         (setq claude-log--summarize-active t
               claude-log--summarize-stop nil)
+        (cl-incf claude-log--summarize-generation)
         (message "Generating summaries for %d session(s)... (run again to stop)"
                  (length pending))
-        (claude-log--summarize-next pending index 0 (length pending)))))))
+        (claude-log--summarize-next
+         pending index 0 (length pending)
+         claude-log--summarize-generation))))))
 
 ;;;###autoload
 (defun claude-log-stop-summarizing ()
-  "Stop summary generation after the current request finishes."
+  "Stop summary generation immediately.
+Any in-flight gptel request will still complete, but its callback
+will not spawn further work."
   (interactive)
   (if claude-log--summarize-active
       (progn
-        (setq claude-log--summarize-stop t)
-        (message "Summary generation will stop after the current request"))
+        ;; Bump the generation so that any pending callback or timer
+        ;; from the current run becomes stale and is silently ignored.
+        (cl-incf claude-log--summarize-generation)
+        (setq claude-log--summarize-active nil
+              claude-log--summarize-stop nil)
+        (message "Summary generation stopped"))
     (message "No summary generation in progress")))
 
-(defun claude-log--summarize-next (remaining index done total)
+(defun claude-log--summarize-next (remaining index done total gen)
   "Generate summary for the next session in REMAINING.
 INDEX is the current index hash table.  DONE sessions processed
-so far out of TOTAL."
-  (if (or (null remaining) claude-log--summarize-stop)
-      (progn
-        (claude-log--write-index index)
-        (let ((stopped claude-log--summarize-stop))
-          (setq claude-log--summarize-active nil
-                claude-log--summarize-stop nil)
-          (message "Summary generation %s: %d/%d session(s) done"
-                   (if stopped "stopped" "complete") done total)))
-    (let* ((session (car remaining))
-           (sid (car session))
-           (meta (cdr session))
-           (jsonl-file (plist-get meta :file)))
-      (condition-case err
-          (let* ((entries (claude-log--parse-jsonl-file jsonl-file))
-                 (text (claude-log--extract-conversation-text entries)))
-            (if (string-empty-p (string-trim text))
-                (progn
-                  (message "Skipping %s (no conversation text)" sid)
-                  (claude-log--summarize-next
-                   (cdr remaining) index (1+ done) total))
-              (message "Summarizing %d/%d: %s..." (1+ done) total
-                       (claude-log--truncate-string
-                        (or (plist-get meta :display) sid) 40))
-              (let* ((prompt (claude-log--build-summary-prompt text))
-                     (resolved (claude-log--resolve-summary-backend-and-model))
-                     (gptel-backend (car resolved))
-                     (gptel-model (cdr resolved)))
-                (gptel-request prompt
-                  :system claude-log--summary-system-message
-                  :callback
-                  (lambda (response _info)
-                    (when (stringp response)
-                      (let ((parsed (claude-log--parse-summary-response
-                                     response)))
-                        (if parsed
-                            (progn
-                              (claude-log--index-merge
-                               index sid
-                               (list :summary (car parsed)
-                                     :summary-oneline (cdr parsed)))
-                              ;; Write index after each summary for durability
-                              (claude-log--write-index index))
-                          (message "Failed to parse summary for %s" sid))))
-                    ;; Defer next request out of the sentinel context
-                    ;; to prevent re-entrant sentinel calls.
-                    (run-with-timer 0.1 nil
-                                    #'claude-log--summarize-next
-                                    (cdr remaining) index
-                                    (1+ done) total))))))
-        (error
-         (message "Failed to summarize %s: %s"
-                  sid (error-message-string err))
-         (run-with-timer 0.1 nil
+so far out of TOTAL.  GEN is the generation counter; if it no longer
+matches `claude-log--summarize-generation', this call is stale and
+does nothing."
+  ;; Stale generation — a previous run's callback; ignore it.
+  (when (and claude-log--summarize-active
+             (= gen claude-log--summarize-generation))
+    (if (or (null remaining) claude-log--summarize-stop)
+        (progn
+          (claude-log--write-index index)
+          (let ((stopped claude-log--summarize-stop))
+            (setq claude-log--summarize-active nil
+                  claude-log--summarize-stop nil)
+            (message "Summary generation %s: %d/%d session(s) done"
+                     (if stopped "stopped" "complete") done total)))
+      (let* ((session (car remaining))
+             (sid (car session))
+             (meta (cdr session))
+             (jsonl-file (plist-get meta :file)))
+        (condition-case err
+            (let* ((entries (claude-log--parse-jsonl-file jsonl-file))
+                   (text (claude-log--extract-conversation-text entries)))
+              (if (string-empty-p (string-trim text))
+                  (progn
+                    (message "Skipping %s (no conversation text)" sid)
+                    (claude-log--summarize-next
+                     (cdr remaining) index (1+ done) total gen))
+                (message "Summarizing %d/%d: %s..." (1+ done) total
+                         (claude-log--truncate-string
+                          (or (plist-get meta :display) sid) 40))
+                (let* ((prompt (claude-log--build-summary-prompt text))
+                       (resolved (claude-log--resolve-summary-backend-and-model))
+                       (gptel-backend (car resolved))
+                       (gptel-model (cdr resolved)))
+                  (gptel-request prompt
+                    :system claude-log--summary-system-message
+                    :callback
+                    (lambda (response _info)
+                      ;; Guard: only proceed if this generation is still current.
+                      (when (and claude-log--summarize-active
+                                 (= gen claude-log--summarize-generation))
+                        (when (stringp response)
+                          (let ((parsed (claude-log--parse-summary-response
+                                         response)))
+                            (if parsed
+                                (progn
+                                  (claude-log--index-merge
+                                   index sid
+                                   (list :summary (car parsed)
+                                         :summary-oneline (cdr parsed)))
+                                  ;; Write index after each summary for durability
+                                  (claude-log--write-index index))
+                              (message "Failed to parse summary for %s" sid))))
+                        ;; Defer next request out of the sentinel context
+                        ;; to prevent re-entrant sentinel calls.
+                        (run-with-timer
+                         0.1 nil
                          #'claude-log--summarize-next
-                         (cdr remaining) index (1+ done) total))))))
+                         (cdr remaining) index
+                         (1+ done) total gen)))))))
+          (error
+           (message "Failed to summarize %s: %s"
+                    sid (error-message-string err))
+           (run-with-timer 0.1 nil
+                           #'claude-log--summarize-next
+                           (cdr remaining) index
+                           (1+ done) total gen)))))))
 
 (defun claude-log--maybe-insert-summary (session-id)
   "Insert the AI summary for SESSION-ID into the current buffer, if available."
