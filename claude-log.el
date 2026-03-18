@@ -146,6 +146,11 @@ When nil, defaults to `gptel-model'."
 (defvar-local claude-log--partial-line ""
   "Leftover partial line from the last incremental read.")
 
+(defvar-local claude-log--partial-bytes nil
+  "Unibyte string of leftover bytes from an incomplete UTF-8 sequence.
+When a chunk boundary splits a multi-byte character, the trailing
+bytes are saved here and prepended to the next raw read.")
+
 (defvar-local claude-log--watcher nil
   "File-notify descriptor for live updates.")
 
@@ -324,8 +329,8 @@ Writes to a temporary file first, then renames to avoid corruption
 if Emacs crashes mid-write."
   (let* ((file (claude-log--index-file))
          (dir (file-name-directory file))
+         (_ensure (make-directory dir t))
          (tmp (make-temp-file (expand-file-name "_index-tmp" dir) nil ".el")))
-    (make-directory dir t)
     (condition-case err
         (progn
           (with-temp-file tmp
@@ -644,7 +649,7 @@ Malformed lines are silently skipped."
                     (condition-case nil
                         (claude-log--parse-json-line line)
                       (error nil)))
-                  (seq-filter (lambda (s) (not (string-empty-p s))) lines)))))
+                  lines))))
 
 (defun claude-log--read-file-lines (file)
   "Read FILE and return a list of non-empty lines."
@@ -1041,14 +1046,54 @@ COLLECTION is a list of strings or an alist of (string . value)."
            (message "claude-log: error reading incremental update: %s"
                     (error-message-string err))))))))
 
+(defun claude-log--incomplete-utf8-tail-length (unibyte-str)
+  "Return the number of trailing bytes that form an incomplete UTF-8 sequence.
+UNIBYTE-STR is a unibyte string.  Returns 0 if the string ends on
+a complete character boundary."
+  (let* ((len (length unibyte-str))
+         (i (1- len)))
+    (if (< len 1)
+        0
+      ;; Walk backward past continuation bytes (10xxxxxx).
+      (while (and (>= i (max 0 (- len 4)))
+                  (= (logand (aref unibyte-str i) #xC0) #x80))
+        (cl-decf i))
+      (if (< i 0)
+          ;; All bytes are continuations — all are leftover.
+          (min len 3)
+        (let* ((lead (aref unibyte-str i))
+               (expected (cond
+                          ((< lead #x80) 1)        ; 0xxxxxxx — ASCII
+                          ((< lead #xC0) 1)        ; unexpected continuation
+                          ((< lead #xE0) 2)        ; 110xxxxx
+                          ((< lead #xF0) 3)        ; 1110xxxx
+                          ((< lead #xF8) 4)        ; 11110xxx
+                          (t 1)))                   ; invalid
+               (available (- len i)))
+          (if (< available expected)
+              available
+            0))))))
+
 (defun claude-log--read-bytes-from (file start end)
   "Read bytes from FILE between START and END offsets.
-Uses raw-text coding to avoid multi-byte decoding issues at
-chunk boundaries, then decodes the result as UTF-8."
+Handles incomplete UTF-8 sequences at chunk boundaries by saving
+trailing partial bytes in `claude-log--partial-bytes' and
+prepending any previously saved bytes."
   (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (when claude-log--partial-bytes
+      (insert claude-log--partial-bytes))
     (let ((coding-system-for-read 'raw-text))
       (insert-file-contents file nil start end))
-    (decode-coding-region (point-min) (point-max) 'utf-8 t)))
+    (let ((tail (claude-log--incomplete-utf8-tail-length
+                 (buffer-substring-no-properties (point-min) (point-max)))))
+      (if (> tail 0)
+          (progn
+            (setq claude-log--partial-bytes
+                  (buffer-substring-no-properties (- (point-max) tail) (point-max)))
+            (delete-region (- (point-max) tail) (point-max)))
+        (setq claude-log--partial-bytes nil))
+      (decode-coding-region (point-min) (point-max) 'utf-8 t))))
 
 (defun claude-log--process-incremental-text (text at-end)
   "Parse new TEXT from the JSONL file and append rendered entries.
@@ -1320,6 +1365,7 @@ preceding separator."
           (let ((inhibit-read-only t))
             (erase-buffer)
             (insert-file-contents claude-log--rendered-file)
+            (set-buffer-modified-p nil)
             (goto-char (point-min))
             (claude-log--collapse-as-configured)
             (claude-log--maybe-insert-summary claude-log--session-id)
