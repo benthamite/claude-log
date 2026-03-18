@@ -1496,13 +1496,18 @@ so far out of TOTAL."
                               ;; Write index after each summary for durability
                               (claude-log--write-index index))
                           (message "Failed to parse summary for %s" sid))))
-                    (claude-log--summarize-next
-                     (cdr remaining) index (1+ done) total))))))
+                    ;; Defer next request out of the sentinel context
+                    ;; to prevent re-entrant sentinel calls.
+                    (run-with-timer 0.1 nil
+                                    #'claude-log--summarize-next
+                                    (cdr remaining) index
+                                    (1+ done) total))))))
         (error
          (message "Failed to summarize %s: %s"
                   sid (error-message-string err))
-         (claude-log--summarize-next
-          (cdr remaining) index (1+ done) total))))))
+         (run-with-timer 0.1 nil
+                         #'claude-log--summarize-next
+                         (cdr remaining) index (1+ done) total))))))
 
 (defun claude-log--maybe-insert-summary (session-id)
   "Insert the AI summary for SESSION-ID into the current buffer, if available."
