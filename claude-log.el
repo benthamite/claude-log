@@ -1531,11 +1531,19 @@ does nothing."
                        (resolved (claude-log--resolve-summary-backend-and-model))
                        (gptel-backend (car resolved))
                        (gptel-model (cdr resolved))
-                       (request-id (cl-gensym "summarize-")))
+                       (request-id (cl-gensym "summarize-"))
+                       (display (plist-get meta :display))
+                       (display (if (or (null display)
+                                        (string-empty-p display)
+                                        (string-prefix-p "/" display))
+                                    ;; Extract first user message from text
+                                    (if (string-match "\\`User: \\(.+\\)" text)
+                                        (match-string 1 text)
+                                      sid)
+                                  display)))
                   (message "Summarizing %d/%d with %s: %s..." (1+ done) total
                            gptel-model
-                           (claude-log--truncate-string
-                            (or (plist-get meta :display) sid) 40))
+                           (claude-log--truncate-string display 40))
                   (setq claude-log--summarize-request-id request-id)
                   (gptel-request prompt
                     :system claude-log--summary-system-message
