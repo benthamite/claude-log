@@ -259,7 +259,7 @@ Uses timers to avoid blocking Emacs."
     (if (null pending)
         (message "All %d sessions up to date" (length sessions))
       (message "Syncing %d session(s)..." (length pending))
-      (claude-log--sync-next pending index 0 (length pending)))))
+      (claude-log--sync-next pending 0 (length pending)))))
 
 (defun claude-log--pending-sessions (sessions index)
   "Return sessions from SESSIONS that need rendering per INDEX."
@@ -275,24 +275,22 @@ Uses timers to avoid blocking Emacs."
        (not (and rpath (file-exists-p rpath) csize jsize (= csize jsize)))))
    sessions))
 
-(defun claude-log--sync-next (remaining index done total)
-  "Render the next session in REMAINING using INDEX.
+(defun claude-log--sync-next (remaining done total)
+  "Render the next session in REMAINING.
 DONE sessions rendered so far out of TOTAL."
   (if (null remaining)
-      (progn
-        (claude-log--write-index index)
-        (message "Sync complete: rendered %d session(s)" total))
+      (message "Sync complete: rendered %d session(s)" total)
     (let* ((session (car remaining))
            (sid (car session))
            (meta (cdr session)))
       (condition-case err
           (let ((result (claude-log--render-to-file sid meta)))
-            (claude-log--index-merge
-             index sid (list :file (car result) :jsonl-size (cdr result))))
+            (claude-log--index-update-props
+             sid (list :file (car result) :jsonl-size (cdr result))))
         (error (message "Failed to render %s: %s"
                         sid (error-message-string err))))
       (run-with-timer 0 nil #'claude-log--sync-next
-                      (cdr remaining) index (1+ done) total))))
+                      (cdr remaining) (1+ done) total))))
 
 (defun claude-log--activate-mode ()
   "Activate `claude-log-mode' with parent mode hooks suppressed.
@@ -356,12 +354,18 @@ Existing properties not in PROPS are preserved."
              do (setq existing (plist-put existing key val)))
     (puthash session-id existing index)))
 
+(defun claude-log--index-update-props (session-id props)
+  "Atomically merge PROPS into the disk index entry for SESSION-ID.
+Reads the current index from disk, merges PROPS, and writes back,
+ensuring concurrent operations do not clobber each other."
+  (let ((index (claude-log--read-index)))
+    (claude-log--index-merge index session-id props)
+    (claude-log--write-index index)))
+
 (defun claude-log--index-update (session-id rendered-path jsonl-size)
   "Update the index entry for SESSION-ID with RENDERED-PATH and JSONL-SIZE."
-  (let ((index (claude-log--read-index)))
-    (claude-log--index-merge index session-id
-                             (list :file rendered-path :jsonl-size jsonl-size))
-    (claude-log--write-index index)))
+  (claude-log--index-update-props
+   session-id (list :file rendered-path :jsonl-size jsonl-size)))
 
 ;;;;; Slug and filepath
 
@@ -485,9 +489,8 @@ Returns the path to the rendered file."
              (= cached-size current-size))
         rendered-path
       (let ((result (claude-log--render-to-file session-id metadata)))
-        (claude-log--index-merge
-         index session-id (list :file (car result) :jsonl-size (cdr result)))
-        (claude-log--write-index index)
+        (claude-log--index-update-props
+         session-id (list :file (car result) :jsonl-size (cdr result)))
         (car result)))))
 
 (defun claude-log--open-rendered (session-id metadata)
@@ -1486,7 +1489,7 @@ If summary generation is already in progress, stop it instead."
         (message "Generating summaries for %d session(s)... (run again to stop)"
                  (length pending))
         (claude-log--summarize-next
-         pending index 0 (length pending)
+         pending 0 (length pending)
          claude-log--summarize-generation))))))
 
 ;;;###autoload
@@ -1505,23 +1508,20 @@ will not spawn further work."
         (message "Summary generation stopped"))
     (message "No summary generation in progress")))
 
-(defun claude-log--summarize-next (remaining index done total gen)
+(defun claude-log--summarize-next (remaining done total gen)
   "Generate summary for the next session in REMAINING.
-INDEX is the current index hash table.  DONE sessions processed
-so far out of TOTAL.  GEN is the generation counter; if it no longer
-matches `claude-log--summarize-generation', this call is stale and
-does nothing."
-  ;; Stale generation — a previous run's callback; ignore it.
+DONE sessions processed so far out of TOTAL.  GEN is the
+generation counter; if it no longer matches
+`claude-log--summarize-generation', this call is stale and does
+nothing."
   (when (and claude-log--summarize-active
              (= gen claude-log--summarize-generation))
     (if (or (null remaining) claude-log--summarize-stop)
-        (progn
-          (claude-log--write-index index)
-          (let ((stopped claude-log--summarize-stop))
-            (setq claude-log--summarize-active nil
-                  claude-log--summarize-stop nil)
-            (message "Summary generation %s: %d/%d session(s) done"
-                     (if stopped "stopped" "complete") done total)))
+        (let ((stopped claude-log--summarize-stop))
+          (setq claude-log--summarize-active nil
+                claude-log--summarize-stop nil)
+          (message "Summary generation %s: %d/%d session(s) done"
+                   (if stopped "stopped" "complete") done total))
       (let* ((session (car remaining))
              (sid (car session))
              (meta (cdr session))
@@ -1533,62 +1533,70 @@ does nothing."
                   (progn
                     (message "Skipping %s (no conversation text)" sid)
                     (claude-log--summarize-next
-                     (cdr remaining) index (1+ done) total gen))
-                (let* ((prompt (claude-log--build-summary-prompt text))
-                       (resolved (claude-log--resolve-summary-backend-and-model))
-                       (gptel-backend (car resolved))
-                       (gptel-model (cdr resolved))
-                       (request-id (cl-gensym "summarize-"))
-                       (display (plist-get meta :display))
-                       (display (if (or (null display)
-                                        (string-empty-p display)
-                                        (string-prefix-p "/" display))
-                                    ;; Extract first user message from text
-                                    (if (string-match "\\`User: \\(.+\\)" text)
-                                        (match-string 1 text)
-                                      sid)
-                                  display)))
-                  (message "Summarizing %d/%d with %s: %s..." (1+ done) total
-                           gptel-model
-                           (claude-log--truncate-string display 70))
-                  (setq claude-log--summarize-request-id request-id)
-                  (gptel-request prompt
-                    :system claude-log--summary-system-message
-                    :callback
-                    (lambda (response _info)
-                      ;; Guard 1: only the first callback for this request
-                      ;; may continue the chain.
-                      (when (eq claude-log--summarize-request-id request-id)
-                        (setq claude-log--summarize-request-id nil)
-                        ;; Guard 2: generation must still be current.
-                        (when (and claude-log--summarize-active
-                                   (= gen claude-log--summarize-generation))
-                          (when (stringp response)
-                            (let ((parsed (claude-log--parse-summary-response
-                                           response)))
-                              (if parsed
-                                  (progn
-                                    (claude-log--index-merge
-                                     index sid
-                                     (list :summary (car parsed)
-                                           :summary-oneline (cdr parsed)))
-                                    ;; Write index after each summary
-                                    (claude-log--write-index index))
-                                (message "Failed to parse summary for %s" sid))))
-                          ;; Defer next request out of the sentinel context
-                          ;; to prevent re-entrant sentinel calls.
-                          (run-with-timer
-                           0.1 nil
-                           #'claude-log--summarize-next
-                           (cdr remaining) index
-                           (1+ done) total gen))))))))
+                     (cdr remaining) (1+ done) total gen))
+                (claude-log--summarize-one
+                 sid meta text remaining done total gen)))
           (error
            (message "Failed to summarize %s: %s"
                     sid (error-message-string err))
            (run-with-timer 0.1 nil
                            #'claude-log--summarize-next
-                           (cdr remaining) index
+                           (cdr remaining)
                            (1+ done) total gen)))))))
+
+(defun claude-log--summarize-one (sid meta text remaining done total gen)
+  "Send a gptel request to summarize session SID.
+META is the session metadata plist.  TEXT is the extracted
+conversation text.  REMAINING, DONE, TOTAL, and GEN are
+chain-continuation state for `claude-log--summarize-next'."
+  (let* ((prompt (claude-log--build-summary-prompt text))
+         (resolved (claude-log--resolve-summary-backend-and-model))
+         (gptel-backend (car resolved))
+         (gptel-model (cdr resolved))
+         (request-id (cl-gensym "summarize-"))
+         (display (claude-log--summarize-display-name meta text sid)))
+    (message "Summarizing %d/%d with %s: %s..." (1+ done) total
+             gptel-model
+             (claude-log--truncate-string display 70))
+    (setq claude-log--summarize-request-id request-id)
+    (gptel-request prompt
+      :system claude-log--summary-system-message
+      :callback
+      (lambda (response _info)
+        (claude-log--summarize-callback
+         response request-id sid remaining done total gen)))))
+
+(defun claude-log--summarize-display-name (meta text sid)
+  "Return a human-readable display name from META, TEXT, or SID."
+  (let ((display (plist-get meta :display)))
+    (if (or (null display)
+            (string-empty-p display)
+            (string-prefix-p "/" display))
+        (if (string-match "\\`User: \\(.+\\)" text)
+            (match-string 1 text)
+          sid)
+      display)))
+
+(defun claude-log--summarize-callback (response request-id sid remaining done total gen)
+  "Handle the gptel RESPONSE for a summary request.
+REQUEST-ID, SID, REMAINING, DONE, TOTAL, and GEN are
+chain-continuation state."
+  (when (eq claude-log--summarize-request-id request-id)
+    (setq claude-log--summarize-request-id nil)
+    (when (and claude-log--summarize-active
+               (= gen claude-log--summarize-generation))
+      (when (stringp response)
+        (let ((parsed (claude-log--parse-summary-response response)))
+          (if parsed
+              (claude-log--index-update-props
+               sid (list :summary (car parsed)
+                         :summary-oneline (cdr parsed)))
+            (message "Failed to parse summary for %s" sid))))
+      (run-with-timer
+       0.1 nil
+       #'claude-log--summarize-next
+       (cdr remaining)
+       (1+ done) total gen))))
 
 (defun claude-log--maybe-insert-summary (session-id)
   "Insert the AI summary for SESSION-ID into the current buffer, if available."
