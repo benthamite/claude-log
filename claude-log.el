@@ -609,7 +609,12 @@ Projects are sorted by most recent session timestamp."
 
 (defun claude-log--build-candidates (sessions)
   "Build an alist of (display-string . (session-id . metadata)) from SESSIONS."
-  (let ((index (claude-log--read-index)))
+  (let* ((index (claude-log--read-index))
+         (proj-width (claude-log--max-project-width sessions))
+         ;; date (16) + 2 gaps (2+2) + project + 2 padding = fixed cols
+         (fixed-cols (+ 16 2 proj-width 2))
+         (summary-width (max 20 (- (frame-width) fixed-cols 1)))
+         (fmt (format "%%s  %%-%ds  %%s" proj-width)))
     (mapcar
      (lambda (session)
        (let* ((session-id (car session))
@@ -621,16 +626,26 @@ Projects are sorted by most recent session timestamp."
               (oneline (when index-entry
                          (plist-get index-entry :summary-oneline)))
               (label (if oneline
-                         (format "%s  %-20s  %s" date project
+                         (format fmt date project
                                  (claude-log--truncate-string
-                                  oneline claude-log-display-width))
+                                  oneline summary-width))
                        (let ((display (claude-log--normalize-whitespace
                                        (plist-get meta :display))))
-                         (format "%s  %-20s  \"%s\"" date project
-                                 (claude-log--truncate-string
-                                  display claude-log-display-width))))))
+                         (format fmt date project
+                                 (concat "\"" (claude-log--truncate-string
+                                               display (- summary-width 2))
+                                         "\""))))))
          (cons label (cons session-id meta))))
      sessions)))
+
+(defun claude-log--max-project-width (sessions)
+  "Return the maximum display width of project names in SESSIONS."
+  (let ((max-w 0))
+    (dolist (session sessions max-w)
+      (let* ((project (claude-log--short-project
+                       (plist-get (cdr session) :project)))
+             (w (string-width project)))
+        (when (> w max-w) (setq max-w w))))))
 
 (defun claude-log--short-project (path)
   "Extract a short project name from PATH."
@@ -1580,18 +1595,20 @@ chain-continuation state for `claude-log--summarize-next'."
 (defun claude-log--summarize-callback (response request-id sid remaining done total gen)
   "Handle the gptel RESPONSE for a summary request.
 REQUEST-ID, SID, REMAINING, DONE, TOTAL, and GEN are
-chain-continuation state."
-  (when (eq claude-log--summarize-request-id request-id)
+chain-continuation state.  Non-string responses (tool-calls,
+reasoning blocks) are ignored; only the final string response
+consumes the request guard and advances the chain."
+  (when (and (stringp response)
+             (eq claude-log--summarize-request-id request-id))
     (setq claude-log--summarize-request-id nil)
     (when (and claude-log--summarize-active
                (= gen claude-log--summarize-generation))
-      (when (stringp response)
-        (let ((parsed (claude-log--parse-summary-response response)))
-          (if parsed
-              (claude-log--index-update-props
-               sid (list :summary (car parsed)
-                         :summary-oneline (cdr parsed)))
-            (message "Failed to parse summary for %s" sid))))
+      (let ((parsed (claude-log--parse-summary-response response)))
+        (if parsed
+            (claude-log--index-update-props
+             sid (list :summary (car parsed)
+                       :summary-oneline (cdr parsed)))
+          (message "Failed to parse summary for %s" sid)))
       (run-with-timer
        0.1 nil
        #'claude-log--summarize-next
