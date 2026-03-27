@@ -1531,14 +1531,35 @@ Returns (SUMMARY . ONELINE) or nil."
           (cons summary oneline)))
     (error nil)))
 
+(declare-function claude-code--buffer-p "claude-code")
+
+(defun claude-log--active-project-dirs ()
+  "Return a list of normalized project directories with live Claude Code sessions."
+  (when (require 'claude-code nil t)
+    (let (dirs)
+      (dolist (buf (buffer-list))
+        (when (and (buffer-live-p buf)
+                   (claude-code--buffer-p buf)
+                   (when-let* ((proc (get-buffer-process buf)))
+                     (process-live-p proc)))
+          (when-let* ((dir (buffer-local-value 'default-directory buf)))
+            (push (directory-file-name (file-truename dir)) dirs))))
+      (delete-dups dirs))))
+
 (defun claude-log--sessions-needing-summary (sessions index)
-  "Return sessions from SESSIONS that lack a summary in INDEX."
-  (seq-filter
-   (lambda (session)
-     (let* ((sid (car session))
-            (entry (gethash sid index)))
-       (not (and entry (plist-get entry :summary-oneline)))))
-   sessions))
+  "Return sessions from SESSIONS that lack a summary in INDEX.
+Sessions whose project matches an active Claude Code buffer are excluded."
+  (let ((active-dirs (claude-log--active-project-dirs)))
+    (seq-filter
+     (lambda (session)
+       (let* ((sid (car session))
+              (entry (gethash sid index))
+              (project (plist-get (cdr session) :project)))
+         (and (not (and entry (plist-get entry :summary-oneline)))
+              (not (and project
+                        (member (directory-file-name (file-truename project))
+                                active-dirs))))))
+     sessions)))
 
 ;;;###autoload
 (defun claude-log-summarize-sessions ()
