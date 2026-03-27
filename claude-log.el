@@ -136,6 +136,18 @@ When nil, defaults to `gptel-model'."
   "Maximum characters of conversation text sent to the LLM for summarization."
   :type 'integer)
 
+(defcustom claude-log-sync-on-session-end nil
+  "Whether to sync and summarize when a Claude Code session ends.
+When non-nil, `claude-log-sync-all' and `claude-log-summarize-sessions'
+run automatically after a session terminates.  Requires the `claude-code'
+package and a \"Stop\" hook configured in Claude Code settings."
+  :type 'boolean
+  :set (lambda (sym val)
+         (set-default sym val)
+         (if val
+             (add-hook 'claude-code-event-hook #'claude-log--session-end-handler)
+           (remove-hook 'claude-code-event-hook #'claude-log--session-end-handler))))
+
 ;;;;; Internal variables
 
 (defvar-local claude-log--source-file nil
@@ -249,17 +261,20 @@ a project, then for a session within that project."
     (claude-log-open-file file)))
 
 ;;;###autoload
-(defun claude-log-sync-all ()
+(defun claude-log-sync-all (&optional callback)
   "Render all unrendered or stale sessions.
-Uses timers to avoid blocking Emacs."
+Uses timers to avoid blocking Emacs.  When CALLBACK is non-nil,
+call it with no arguments after the last session is rendered."
   (interactive)
   (let* ((sessions (claude-log--read-sessions))
          (index (claude-log--read-index))
          (pending (claude-log--pending-sessions sessions index)))
     (if (null pending)
-        (message "All %d sessions up to date" (length sessions))
+        (progn
+          (message "All %d sessions up to date" (length sessions))
+          (when callback (funcall callback)))
       (message "Syncing %d session(s)..." (length pending))
-      (claude-log--sync-next pending 0 (length pending)))))
+      (claude-log--sync-next pending 0 (length pending) callback))))
 
 (defun claude-log--pending-sessions (sessions index)
   "Return sessions from SESSIONS that need rendering per INDEX."
@@ -275,11 +290,14 @@ Uses timers to avoid blocking Emacs."
        (not (and rpath (file-exists-p rpath) csize jsize (= csize jsize)))))
    sessions))
 
-(defun claude-log--sync-next (remaining done total)
+(defun claude-log--sync-next (remaining done total &optional callback)
   "Render the next session in REMAINING.
-DONE sessions rendered so far out of TOTAL."
+DONE sessions rendered so far out of TOTAL.  When CALLBACK is
+non-nil, call it with no arguments after the last session."
   (if (null remaining)
-      (message "Sync complete: rendered %d session(s)" total)
+      (progn
+        (message "Sync complete: rendered %d session(s)" total)
+        (when callback (funcall callback)))
     (let* ((session (car remaining))
            (sid (car session))
            (meta (cdr session)))
@@ -290,7 +308,7 @@ DONE sessions rendered so far out of TOTAL."
         (error (message "Failed to render %s: %s"
                         sid (error-message-string err))))
       (run-with-timer 0 nil #'claude-log--sync-next
-                      (cdr remaining) (1+ done) total))))
+                      (cdr remaining) (1+ done) total callback))))
 
 (defun claude-log--activate-mode ()
   "Activate `claude-log-mode' with parent mode hooks suppressed.
@@ -1684,6 +1702,25 @@ consumes the request guard and advances the chain."
           (let ((end (next-single-property-change
                       start 'claude-log-summary nil (point-max))))
             (delete-region start end)))))))
+
+;;;;; Session lifecycle integration
+
+(defvar claude-code-event-hook)
+
+(defun claude-log--session-end-handler (message)
+  "Handle a Claude Code event MESSAGE, triggering sync on session end.
+Intended for use in `claude-code-event-hook'.  Runs `claude-log-sync-all'
+followed by `claude-log-summarize-sessions' when `:type' is \"Stop\"."
+  (when (equal (plist-get message :type) "Stop")
+    ;; Delay briefly to let the JSONL file finish writing.
+    (run-with-timer
+     1 nil
+     (lambda ()
+       (claude-log-sync-all
+        (lambda ()
+          (when (require 'gptel nil t)
+            (claude-log-summarize-sessions))))))
+    nil))
 
 ;;;;; Resume session
 
