@@ -522,7 +522,8 @@ METADATA is a plist with :file, :timestamp, :project, :display."
   "Parse `history.jsonl' and return alist of session-id to metadata.
 Each value is a plist (:display :timestamp :project :file)."
   (let ((history-file (expand-file-name "history.jsonl" claude-log-directory))
-        (sessions (make-hash-table :test #'equal)))
+        (sessions (make-hash-table :test #'equal))
+        (file-index (claude-log--build-session-file-index)))
     (unless (file-exists-p history-file)
       (user-error "History file not found: %s" history-file))
     (dolist (entry (claude-log--parse-jsonl-file history-file))
@@ -532,7 +533,7 @@ Each value is a plist (:display :timestamp :project :file)."
     (let (result)
       (maphash
        (lambda (sid entry)
-         (when-let* ((file (claude-log--find-session-file sid)))
+         (when-let* ((file (gethash sid file-index)))
            (push (list sid
                        :display (or (plist-get entry :display) "")
                        :timestamp (plist-get entry :timestamp)
@@ -545,6 +546,21 @@ Each value is a plist (:display :timestamp :project :file)."
                            (ts-b (plist-get (cdr b) :timestamp)))
                        (> (if (numberp ts-a) ts-a 0)
                           (if (numberp ts-b) ts-b 0))))))))
+
+(defun claude-log--build-session-file-index ()
+  "Build a hash table mapping session-id to JSONL file path.
+Scans the projects directory once, which is much faster than
+probing per session."
+  (let ((index (make-hash-table :test #'equal))
+        (projects-dir (expand-file-name "projects" claude-log-directory)))
+    (when (file-directory-p projects-dir)
+      (dolist (dir (directory-files projects-dir t "^[^.]"))
+        (when (file-directory-p dir)
+          (dolist (file (directory-files dir t "\\.jsonl\\'"))
+            (let ((sid (file-name-sans-extension
+                        (file-name-nondirectory file))))
+              (puthash sid file index))))))
+    index))
 
 (defun claude-log--find-session-file (session-id)
   "Find the JSONL file for SESSION-ID under the projects directory."
