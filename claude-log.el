@@ -1997,6 +1997,38 @@ Try both the expanded path and its `file-truename'."
           (setq latest f latest-time mtime))))
     latest))
 
+(defconst claude-log--status-directory "/tmp/claude-code-status/"
+  "Directory where Claude Code writes per-buffer JSON status files.")
+
+(defun claude-log--session-id-from-buffer ()
+  "Return the session ID for the Claude session in the current buffer.
+Read it from the status file that Claude Code writes to
+`claude-log--status-directory', keyed by sanitized buffer name."
+  (when-let* ((file (claude-log--status-file-for-buffer))
+              ((file-exists-p file)))
+    (condition-case nil
+        (let* ((json (json-parse-string
+                      (with-temp-buffer
+                        (insert-file-contents file)
+                        (buffer-string))
+                      :object-type 'plist))
+               (sid (plist-get json :session_id)))
+          (when (and (stringp sid) (not (string-empty-p sid)))
+            sid))
+      (error nil))))
+
+(defun claude-log--status-file-for-buffer ()
+  "Return the status file path for the current buffer."
+  (expand-file-name
+   (concat (claude-log--sanitize-buffer-name) ".json")
+   claude-log--status-directory))
+
+(defun claude-log--sanitize-buffer-name ()
+  "Sanitize the current buffer name for use as a filename.
+Replace every non-alphanumeric, non-underscore, non-hyphen
+character with an underscore."
+  (replace-regexp-in-string "[^a-zA-Z0-9_-]" "_" (buffer-name)))
+
 (defun claude-log--find-session-for-project (directory sessions)
   "Find the latest session in SESSIONS whose project matches DIRECTORY.
 SESSIONS should be sorted newest-first (as from `claude-log--read-sessions').
@@ -2017,8 +2049,9 @@ both the expanded path and `file-truename'."
 (defun claude-log-open-session-at-point ()
   "Open the log for the Claude Code session in the current buffer.
 The current buffer must be a Claude Code terminal buffer.
-If no session directory is found via direct path lookup, fall back
-to searching `history.jsonl' for sessions matching the project."
+When possible, identify the exact session via the status file;
+otherwise fall back to the most recent JSONL in the project
+directory or to `history.jsonl'."
   (interactive)
   (unless (require 'claude-code nil t)
     (user-error "Package `claude-code' is required but not available"))
@@ -2026,7 +2059,13 @@ to searching `history.jsonl' for sessions matching the project."
     (user-error "Not in a Claude Code buffer"))
   (let* ((dir (claude-code--extract-directory-from-buffer-name (buffer-name)))
          (session-dir (and dir (claude-log--find-project-session-dir dir)))
-         (jsonl (and session-dir (claude-log--find-latest-jsonl session-dir))))
+         ;; Try to identify the exact session from the process tree.
+         (session-id (claude-log--session-id-from-buffer))
+         (jsonl (or (and session-id session-dir
+                         (let ((f (expand-file-name
+                                   (concat session-id ".jsonl") session-dir)))
+                           (and (file-exists-p f) f)))
+                    (and session-dir (claude-log--find-latest-jsonl session-dir)))))
     (if jsonl
         (claude-log-open-file jsonl)
       ;; Fallback: search history.jsonl for sessions matching this project

@@ -219,7 +219,7 @@ The command ~claude-log-open-file~ opens a specific JSONL file by path.  It prom
 
 The command ~claude-log-open-session~ opens a session by its ID.  It prompts for the session ID interactively.
 
-The command ~claude-log-open-session-at-point~ opens the log for the Claude Code session running in the current buffer.  The current buffer must be a Claude Code terminal buffer (from the =claude-code= package).  The command identifies the project directory from the buffer name, finds the corresponding session directory under =~/.claude/projects/=, and opens the most recently modified JSONL file.  This lets you quickly jump from an active Claude Code session to its rendered log.
+The command ~claude-log-open-session-at-point~ opens the log for the Claude Code session running in the current buffer.  The current buffer must be a Claude Code terminal buffer (from the =claude-code= package).  The command reads the session ID from the Claude Code status file (written to =/tmp/claude-code-status/=), which uniquely identifies the session even when multiple sessions share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching =history.jsonl=.  This lets you quickly jump from an active Claude Code session to its rendered log.
 
 ** Rendered directory
 :PROPERTIES:
