@@ -1626,7 +1626,9 @@ nothing."
                    (text (claude-log--extract-conversation-text entries)))
               (if (string-empty-p (string-trim text))
                   (progn
-                    (message "Skipping %s (no conversation text)" sid)
+                    (claude-log--index-update-props
+                     sid (list :summary "(no conversation)"
+                               :summary-oneline "(no conversation)"))
                     (claude-log--summarize-next
                      (cdr remaining) (1+ done) total gen))
                 (claude-log--summarize-one
