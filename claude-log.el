@@ -1675,24 +1675,37 @@ chain-continuation state for `claude-log--summarize-next'."
   "Handle the gptel RESPONSE for a summary request.
 REQUEST-ID, SID, REMAINING, DONE, TOTAL, and GEN are
 chain-continuation state.  Non-string responses (tool-calls,
-reasoning blocks) are ignored; only the final string response
-consumes the request guard and advances the chain."
-  (when (and (stringp response)
-             (eq claude-log--summarize-request-id request-id))
-    (setq claude-log--summarize-request-id nil)
-    (when (and claude-log--summarize-active
-               (= gen claude-log--summarize-generation))
-      (let ((parsed (claude-log--parse-summary-response response)))
-        (if parsed
-            (claude-log--index-update-props
-             sid (list :summary (car parsed)
-                       :summary-oneline (cdr parsed)))
-          (message "Failed to parse summary for %s" sid)))
-      (run-with-timer
-       0.1 nil
-       #'claude-log--summarize-next
-       (cdr remaining)
-       (1+ done) total gen))))
+reasoning blocks) are ignored; only the final string response or
+an error (nil) consumes the request guard and advances the chain."
+  (when (eq claude-log--summarize-request-id request-id)
+    (cond
+     ;; Success: got a string response.
+     ((stringp response)
+      (setq claude-log--summarize-request-id nil)
+      (when (and claude-log--summarize-active
+                 (= gen claude-log--summarize-generation))
+        (let ((parsed (claude-log--parse-summary-response response)))
+          (if parsed
+              (claude-log--index-update-props
+               sid (list :summary (car parsed)
+                         :summary-oneline (cdr parsed)))
+            (message "Failed to parse summary for %s" sid)))
+        (run-with-timer
+         0.1 nil
+         #'claude-log--summarize-next
+         (cdr remaining)
+         (1+ done) total gen)))
+     ;; Error: nil response from gptel.  Clear the guard and advance.
+     ((null response)
+      (setq claude-log--summarize-request-id nil)
+      (message "Summary request failed for %s, skipping" sid)
+      (when (and claude-log--summarize-active
+                 (= gen claude-log--summarize-generation))
+        (run-with-timer
+         0.1 nil
+         #'claude-log--summarize-next
+         (cdr remaining)
+         (1+ done) total gen))))))
 
 (defun claude-log--maybe-insert-summary (session-id)
   "Insert the AI summary for SESSION-ID into the current buffer, if available."
@@ -1739,7 +1752,8 @@ followed by `claude-log-summarize-sessions' when `:type' is \"Stop\"."
      (lambda ()
        (claude-log-sync-all
         (lambda ()
-          (when (require 'gptel nil t)
+          (when (and (require 'gptel nil t)
+                     (not claude-log--summarize-active))
             (claude-log-summarize-sessions))))))
     nil))
 
