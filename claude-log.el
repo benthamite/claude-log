@@ -562,8 +562,7 @@ renames or profile migrations."
                      (ts (plist-get entry :timestamp)))
            (let ((existing (gethash dir dir-best-project)))
              (when (or (null existing)
-                       (> (if (numberp ts) ts 0)
-                          (if (numberp (car existing)) (car existing) 0)))
+                       (claude-log--timestamp> ts (car existing)))
                (puthash dir (cons ts proj) dir-best-project)))))
        sessions)
       (let (result)
@@ -583,10 +582,9 @@ renames or profile migrations."
                      result))))
          sessions)
         (sort result (lambda (a b)
-                       (let ((ts-a (plist-get (cdr a) :timestamp))
-                             (ts-b (plist-get (cdr b) :timestamp)))
-                         (> (if (numberp ts-a) ts-a 0)
-                            (if (numberp ts-b) ts-b 0)))))))))
+                       (claude-log--timestamp>
+                        (plist-get (cdr a) :timestamp)
+                        (plist-get (cdr b) :timestamp))))))))
 
 (defun claude-log--build-session-file-index ()
   "Build a hash table mapping session-id to JSONL file path.
@@ -663,10 +661,9 @@ Projects are sorted by most recent session timestamp."
       ;; Each element is (project (sid . plist) ...), so cadr is the
       ;; first session and cdadr is its metadata plist.
       (sort result (lambda (a b)
-                     (let ((ts-a (plist-get (cdadr a) :timestamp))
-                           (ts-b (plist-get (cdadr b) :timestamp)))
-                       (> (if (numberp ts-a) ts-a 0)
-                          (if (numberp ts-b) ts-b 0))))))))
+                     (claude-log--timestamp>
+                      (plist-get (cdadr a) :timestamp)
+                      (plist-get (cdadr b) :timestamp)))))))
 
 (defun claude-log--build-candidates (sessions)
   "Build an alist of (display-string . (session-id . metadata)) from SESSIONS."
@@ -1056,6 +1053,12 @@ Returns an empty string if INPUT is not a proper plist."
 
 ;;;;; Utilities
 
+(defun claude-log--timestamp> (a b)
+  "Return non-nil if timestamp A is more recent than B.
+Handles non-numeric values by treating them as 0."
+  (> (if (numberp a) a 0)
+     (if (numberp b) b 0)))
+
 (defun claude-log--preserve-order-table (collection)
   "Wrap COLLECTION in a completion table that preserves display order.
 COLLECTION is a list of strings or an alist of (string . value)."
@@ -1308,15 +1311,20 @@ Returns the position, or nil."
       (outline-flag-region (point-min) (point-max) nil))
     (claude-log--remove-section-overlays)))
 
+(defun claude-log--apply-configured-visibility (&optional start end)
+  "Apply thinking and tool visibility per user configuration.
+When START and END are given, restrict to that region."
+  (pcase claude-log-show-thinking
+    ('collapsed (claude-log--apply-section-visibility "^#### Thinking$" 'collapse start end))
+    ('hidden (claude-log--apply-section-visibility "^#### Thinking$" 'hide start end)))
+  (pcase claude-log-show-tools
+    ('collapsed (claude-log--apply-section-visibility "^#### Tool" 'collapse start end))
+    ('hidden (claude-log--apply-section-visibility "^#### Tool" 'hide start end))))
+
 (defun claude-log--collapse-as-configured ()
   "Collapse or hide sections per user configuration."
   (claude-log--remove-section-overlays)
-  (pcase claude-log-show-thinking
-    ('collapsed (claude-log--apply-section-visibility "^#### Thinking$" 'collapse))
-    ('hidden (claude-log--apply-section-visibility "^#### Thinking$" 'hide)))
-  (pcase claude-log-show-tools
-    ('collapsed (claude-log--apply-section-visibility "^#### Tool" 'collapse))
-    ('hidden (claude-log--apply-section-visibility "^#### Tool" 'hide)))
+  (claude-log--apply-configured-visibility)
   (claude-log--hide-empty-turns))
 
 (defun claude-log--find-section-end ()
@@ -1361,16 +1369,7 @@ search to that region."
 
 (defun claude-log--collapse-region (start end)
   "Collapse or hide new sections between START and END."
-  (pcase claude-log-show-thinking
-    ('collapsed (claude-log--apply-section-visibility
-                 "^#### Thinking$" 'collapse start end))
-    ('hidden (claude-log--apply-section-visibility
-              "^#### Thinking$" 'hide start end)))
-  (pcase claude-log-show-tools
-    ('collapsed (claude-log--apply-section-visibility
-                 "^#### Tool" 'collapse start end))
-    ('hidden (claude-log--apply-section-visibility
-              "^#### Tool" 'hide start end))))
+  (claude-log--apply-configured-visibility start end))
 
 (defun claude-log--remove-section-overlays ()
   "Remove all section visibility overlays from the current buffer."
@@ -1566,8 +1565,6 @@ Returns (SUMMARY . ONELINE) or nil."
         (when (and (stringp summary) (stringp oneline))
           (cons summary oneline)))
     (error nil)))
-
-(declare-function claude-code--buffer-p "claude-code")
 
 (defvar-local claude-code-extras--status-data nil)
 
@@ -1798,18 +1795,21 @@ JSONL file, making it visible in Claude Code's /resume picker."
     (goto-char (point-min))
     (re-search-forward "\"type\"\\s-*:\\s-*\"custom-title\"" nil t)))
 
-(defun claude-log--append-custom-title (jsonl-file session-id title)
+(defun claude-log--append-custom-title (jsonl-file session-id title &optional index)
   "Append a custom-title entry to JSONL-FILE for SESSION-ID with TITLE.
-Also updates the cached JSONL size in the index so that
-`claude-log--ensure-rendered' does not treat the file as stale."
+Also updates the cached JSONL size so that `claude-log--ensure-rendered'
+does not treat the file as stale.  When INDEX is non-nil, merge the
+new size into it (for batch operations); otherwise write to disk."
   (let ((entry (json-serialize
                 (list :type "custom-title"
                       :customTitle title
                       :sessionId session-id))))
     (write-region (concat entry "\n") nil jsonl-file t 'quiet)
     (when-let* ((new-size (file-attribute-size (file-attributes jsonl-file))))
-      (claude-log--index-update-props
-       session-id (list :jsonl-size new-size)))))
+      (if index
+          (claude-log--index-merge index session-id (list :jsonl-size new-size))
+        (claude-log--index-update-props
+         session-id (list :jsonl-size new-size))))))
 
 (defun claude-log--maybe-rename-session (session-id oneline)
   "Rename SESSION-ID from ONELINE summary if appropriate.
@@ -1860,14 +1860,7 @@ Sessions must be summarized first via `claude-log-summarize-sessions'."
                (claude-log--session-has-custom-title-p jsonl-file))
           (cl-incf skipped))
          (t
-          (let ((entry-json (json-serialize
-                             (list :type "custom-title"
-                                   :customTitle oneline
-                                   :sessionId sid))))
-            (write-region (concat entry-json "\n") nil jsonl-file t 'quiet)
-            (when-let* ((new-size (file-attribute-size
-                                   (file-attributes jsonl-file))))
-              (claude-log--index-merge index sid (list :jsonl-size new-size))))
+          (claude-log--append-custom-title jsonl-file sid oneline index)
           (cl-incf renamed)))))
     (when (> renamed 0)
       (claude-log--write-index index))
