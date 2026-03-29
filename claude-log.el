@@ -1779,15 +1779,15 @@ Also updates the cached JSONL size in the index so that
 (defun claude-log--maybe-rename-session (session-id oneline)
   "Rename SESSION-ID from ONELINE summary if appropriate.
 Finds the session JSONL file, checks it has no custom-title yet,
-and appends one derived from ONELINE.  Does nothing if
-ONELINE is nil, empty, or the sentinel value."
+and writes ONELINE as the title.  Does nothing if ONELINE is nil,
+empty, or the sentinel value."
   (when (and oneline
              (not (string-empty-p oneline))
              (not (equal oneline "(no conversation)")))
     (when-let* ((jsonl-file (claude-log--find-session-file session-id)))
       (unless (claude-log--session-has-custom-title-p jsonl-file)
         (claude-log--append-custom-title
-         jsonl-file session-id (claude-log--slugify oneline))))))
+         jsonl-file session-id oneline)))))
 
 ;;;###autoload
 (defun claude-log-rename-sessions ()
@@ -1820,8 +1820,7 @@ Sessions must be summarized first via `claude-log-summarize-sessions'."
          ((claude-log--session-has-custom-title-p jsonl-file)
           (cl-incf skipped))
          (t
-          (claude-log--append-custom-title jsonl-file sid
-                                           (claude-log--slugify oneline))
+          (claude-log--append-custom-title jsonl-file sid oneline)
           (cl-incf renamed)))))
     (message "Renamed %d session(s), skipped %d (already named), %d without summary"
              renamed skipped no-summary)))
