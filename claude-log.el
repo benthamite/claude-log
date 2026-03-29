@@ -198,6 +198,16 @@ Set before each `gptel-request' and consumed by the first callback
 invocation.  Subsequent callbacks for the same request see a mismatch
 and are silently ignored, preventing chain forking from streaming.")
 
+;; Concurrency control for async summary generation
+;; -------------------------------------------------
+;; `claude-log--summarize-generation' and `claude-log--summarize-request-id'
+;; work together to prevent duplicate chains.  gptel may invoke a callback
+;; multiple times (e.g. partial streaming chunks), and any callback that
+;; schedules the next request can fork the chain.  The generation counter
+;; invalidates an entire run when the user stops or restarts, while the
+;; request-id nonce ensures only the *first* callback per request advances
+;; the chain.  Both must match for a callback to take effect.
+
 ;;;;; Entry points
 
 ;;;###autoload
@@ -308,13 +318,18 @@ non-nil, call it with no arguments after the last session."
              sid (list :file (car result) :jsonl-size (cdr result))))
         (error (message "Failed to render %s: %s"
                         sid (error-message-string err))))
+      ;; Yield to the event loop between sessions to keep Emacs responsive
+      ;; and avoid deep recursion when processing hundreds of sessions.
       (run-with-timer 0 nil #'claude-log--sync-next
                       (cdr remaining) (1+ done) total callback))))
 
 (defun claude-log--activate-mode ()
   "Activate `claude-log-mode' with parent mode hooks suppressed.
-Suppresses `markdown-mode-hook', `markdown-view-mode-hook', and
-flycheck's global-mode hook to prevent unwanted side effects."
+Suppresses `markdown-mode-hook' and `markdown-view-mode-hook' (which
+may set up editing-oriented features inappropriate for a read-only
+rendered buffer) and flycheck's global-mode hook (which would try to
+lint the rendered Markdown as if it were a source file, triggering
+spurious checker errors and background processes)."
   (let ((markdown-mode-hook nil)
         (markdown-view-mode-hook nil)
         (after-change-major-mode-hook
@@ -350,20 +365,20 @@ Returns an empty hash table if the file does not exist or is corrupt."
 Writes to a temporary file first, then renames to avoid corruption
 if Emacs crashes mid-write."
   (let* ((file (claude-log--index-file))
-         (dir (file-name-directory file))
-         (_ensure (make-directory dir t))
-         (tmp (make-temp-file (expand-file-name "_index-tmp" dir) nil ".el")))
-    (condition-case err
-        (progn
-          (with-temp-file tmp
-            (let ((print-level nil)
-                  (print-length nil))
-              (prin1 index (current-buffer))
-              (insert "\n")))
-          (rename-file tmp file t))
-      (error
-       (ignore-errors (delete-file tmp))
-       (signal (car err) (cdr err))))))
+         (dir (file-name-directory file)))
+    (make-directory dir t)
+    (let ((tmp (make-temp-file (expand-file-name "_index-tmp" dir) nil ".el")))
+      (condition-case err
+          (progn
+            (with-temp-file tmp
+              (let ((print-level nil)
+                    (print-length nil))
+                (prin1 index (current-buffer))
+                (insert "\n")))
+            (rename-file tmp file t))
+        (error
+         (ignore-errors (delete-file tmp))
+         (signal (car err) (cdr err)))))))
 
 (defun claude-log--index-merge (index session-id props)
   "Merge PROPS into the INDEX entry for SESSION-ID.
@@ -671,6 +686,8 @@ Projects are sorted by most recent session timestamp."
          (proj-width (claude-log--max-project-width sessions))
          ;; date (16) + 2 gaps (2+2) + project + 2 padding = fixed cols
          (fixed-cols (+ 16 2 proj-width 2))
+         ;; Ensure the summary column is wide enough to be useful even
+         ;; in narrow frames; below ~20 chars summaries become unreadable.
          (summary-width (max 20 (- (frame-width) fixed-cols 1)))
          (fmt (format "%%s  %%-%ds  %%s" proj-width)))
     (mapcar
@@ -1101,6 +1118,9 @@ COLLECTION is a list of strings or an alist of (string . value)."
   (setq-local outline-regexp "##+ ")
   (setq-local outline-level #'claude-log--outline-level)
   (outline-minor-mode 1)
+  ;; Collapsed sections show an ellipsis (the `t' in the cons cell) so
+  ;; the user knows there is hidden content they can expand.  Hidden
+  ;; sections vanish entirely with no visual indicator.
   (add-to-invisibility-spec '(claude-log-collapsed . t))
   (add-to-invisibility-spec 'claude-log-hidden)
   (add-hook 'kill-buffer-hook #'claude-log--cleanup nil t))
@@ -1474,6 +1494,11 @@ preceding separator."
 
 ;;;;; Session summaries
 
+(defconst claude-log--no-conversation-sentinel "(no conversation)"
+  "Sentinel stored as :summary-oneline for sessions with no user/assistant text.
+Used to distinguish \"already processed, nothing to summarize\" from
+\"not yet summarized\" (nil).")
+
 (defconst claude-log--summary-system-message
   "You are a concise summarizer. Given a conversation between a user and an AI \
 coding assistant, produce a JSON object with exactly two fields:
@@ -1662,8 +1687,8 @@ nothing."
               (if (string-empty-p (string-trim text))
                   (progn
                     (claude-log--index-update-props
-                     sid (list :summary "(no conversation)"
-                               :summary-oneline "(no conversation)"))
+                     sid (list :summary claude-log--no-conversation-sentinel
+                               :summary-oneline claude-log--no-conversation-sentinel))
                     (claude-log--summarize-next
                      (cdr remaining) (1+ done) total gen))
                 (claude-log--summarize-one
@@ -1671,6 +1696,8 @@ nothing."
           (error
            (message "Failed to summarize %s: %s"
                     sid (error-message-string err))
+           ;; Brief delay before the next request to avoid hammering the
+           ;; LLM API and to let the event loop process pending I/O.
            (run-with-timer 0.1 nil
                            #'claude-log--summarize-next
                            (cdr remaining)
@@ -1732,6 +1759,8 @@ an error (nil) consumes the request guard and advances the chain."
                 (when claude-log-auto-rename-sessions
                   (claude-log--maybe-rename-session sid (cdr parsed))))
             (message "Failed to parse summary for %s" sid)))
+        ;; Brief delay before the next request to avoid hammering the
+        ;; LLM API and to let the event loop process pending I/O.
         (run-with-timer
          0.1 nil
          #'claude-log--summarize-next
@@ -1818,7 +1847,7 @@ and writes ONELINE as the title.  Does nothing if ONELINE is nil,
 empty, or the sentinel value."
   (when (and oneline
              (not (string-empty-p oneline))
-             (not (equal oneline "(no conversation)")))
+             (not (equal oneline claude-log--no-conversation-sentinel)))
     (when-let* ((jsonl-file (claude-log--find-session-file session-id)))
       (unless (claude-log--session-has-custom-title-p jsonl-file)
         (claude-log--append-custom-title
@@ -1852,7 +1881,7 @@ Sessions must be summarized first via `claude-log-summarize-sessions'."
         (cond
          ((or (null oneline)
               (string-empty-p oneline)
-              (equal oneline "(no conversation)"))
+              (equal oneline claude-log--no-conversation-sentinel))
           (cl-incf no-summary))
          ((not (file-exists-p jsonl-file))
           (cl-incf skipped))
