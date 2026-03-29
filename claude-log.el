@@ -1744,6 +1744,60 @@ an error (nil) consumes the request guard and advances the chain."
                       start 'claude-log-summary nil (point-max))))
             (delete-region start end)))))))
 
+;;;;; Session rename
+
+(defun claude-log--session-has-custom-title-p (jsonl-file)
+  "Return non-nil if JSONL-FILE already contains a custom-title entry."
+  (with-temp-buffer
+    (insert-file-contents jsonl-file)
+    (goto-char (point-min))
+    (search-forward "\"type\":\"custom-title\"" nil t)))
+
+(defun claude-log--append-custom-title (jsonl-file session-id title)
+  "Append a custom-title entry to JSONL-FILE for SESSION-ID with TITLE."
+  (let ((entry (json-serialize
+                (list :type "custom-title"
+                      :customTitle title
+                      :sessionId session-id))))
+    (write-region (concat entry "\n") nil jsonl-file t 'quiet)))
+
+;;;###autoload
+(defun claude-log-rename-sessions ()
+  "Rename unnamed sessions using their AI summaries.
+For each session that has a summary in the index but no
+custom-title in its JSONL file, slugify the summary and write it
+as a custom-title entry.  This makes the name visible in Claude
+Code's /resume picker.
+
+Sessions must be summarized first via `claude-log-summarize-sessions'."
+  (interactive)
+  (let* ((sessions (claude-log--read-sessions))
+         (index (claude-log--read-index))
+         (renamed 0)
+         (skipped 0)
+         (no-summary 0))
+    (dolist (session sessions)
+      (let* ((sid (car session))
+             (metadata (cdr session))
+             (jsonl-file (plist-get metadata :file))
+             (entry (gethash sid index))
+             (oneline (when entry (plist-get entry :summary-oneline))))
+        (cond
+         ((or (null oneline)
+              (string-empty-p oneline)
+              (equal oneline "(no conversation)"))
+          (cl-incf no-summary))
+         ((not (file-exists-p jsonl-file))
+          (cl-incf skipped))
+         ((claude-log--session-has-custom-title-p jsonl-file)
+          (cl-incf skipped))
+         (t
+          (let ((slug (claude-log--slugify oneline)))
+            (claude-log--append-custom-title jsonl-file sid slug)
+            (cl-incf renamed))))))
+    (message "Renamed %d session(s), skipped %d (already named), %d without summary"
+             renamed skipped no-summary)))
+
 ;;;;; Session lifecycle integration
 
 (defvar claude-code-event-hook)
@@ -1948,6 +2002,7 @@ to searching `history.jsonl' for sessions matching the project."
   ["Sync & AI"
    ("S" "Sync all" claude-log-sync-all)
    ("s" "Summarize sessions" claude-log-summarize-sessions)
+   ("R" "Rename from summaries" claude-log-rename-sessions)
    ("x" "Stop summarizing" claude-log-stop-summarizing)]
   ["Navigate"
    :if (lambda () (derived-mode-p 'claude-log-mode))
