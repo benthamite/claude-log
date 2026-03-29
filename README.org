@@ -312,14 +312,11 @@ Sessions with a live Claude Code process are excluded from summarization by sess
 :END:
 
 #+findex: claude-log-rename-sessions
-
 #+vindex: claude-log-auto-rename-sessions
 
 The user option ~claude-log-auto-rename-sessions~ controls whether sessions are renamed automatically when they receive an AI summary.  When set to non-~nil~, each time ~claude-log-summarize-sessions~ successfully generates a summary for a session, the one-line summary is slugified and written as a =custom-title= entry in the session JSONL file.  This makes the name immediately visible in Claude Code's =/resume= picker without any manual step.
 
 The default value is ~nil~.  Set it to ~t~ if you want session names to stay in sync with summaries automatically.
-
-#+findex: claude-log-rename-sessions
 
 The command ~claude-log-rename-sessions~ renames all sessions that lack a custom title.  For each session that has a one-line summary in the index but no =custom-title= entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (=C-u=), it overwrites existing custom titles as well, which is useful after changing the title format.
 

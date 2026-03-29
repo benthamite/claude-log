@@ -149,6 +149,13 @@ package and a \"Stop\" hook configured in Claude Code settings."
              (add-hook 'claude-code-event-hook #'claude-log--session-end-handler)
            (remove-hook 'claude-code-event-hook #'claude-log--session-end-handler))))
 
+(defcustom claude-log-auto-rename-sessions nil
+  "When non-nil, rename sessions automatically after summarization.
+Each time a session receives an AI summary, its one-line summary
+is slugified and written as a custom-title entry in the session
+JSONL file, making it visible in Claude Code's /resume picker."
+  :type 'boolean)
+
 ;;;;; Internal variables
 
 (defvar-local claude-log--source-file nil
@@ -729,7 +736,7 @@ Projects are sorted by most recent session timestamp."
     (file-name-nondirectory (directory-file-name path))))
 
 (defun claude-log--unique-project-names (paths)
-  "Return an alist of (PATH . DISPLAY-NAME) with unique display names.
+  "Return an alist of (PATH . DISPLAY-NAME) with unique display names for PATHS.
 Short names are used when unique; parent/name when collisions occur."
   (let ((counts (make-hash-table :test #'equal)))
     (dolist (path paths)
@@ -1532,7 +1539,8 @@ inferring the backend from the model when needed."
     (cons backend model)))
 
 (defun claude-log--extract-message-text (content)
-  "Extract plain text from message CONTENT, ignoring tool calls and thinking."
+  "Extract plain text from message CONTENT.
+Tool-use and thinking blocks are ignored."
   (cond
    ((stringp content) content)
    ((listp content)
@@ -1810,15 +1818,8 @@ an error (nil) consumes the request guard and advances the chain."
 
 ;;;;; Session rename
 
-(defcustom claude-log-auto-rename-sessions nil
-  "When non-nil, rename sessions automatically after summarization.
-Each time a session receives an AI summary, its one-line summary
-is slugified and written as a custom-title entry in the session
-JSONL file, making it visible in Claude Code's /resume picker."
-  :type 'boolean)
-
 (defun claude-log--session-has-custom-title-p (jsonl-file)
-  "Return non-nil if JSONL-FILE already contains a custom-title entry."
+  "Return non-nil if JSONL-FILE already has a custom-title entry."
   (with-temp-buffer
     (insert-file-contents jsonl-file)
     (goto-char (point-min))
