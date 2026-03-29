@@ -1790,15 +1790,19 @@ empty, or the sentinel value."
          jsonl-file session-id oneline)))))
 
 ;;;###autoload
-(defun claude-log-rename-sessions ()
-  "Rename unnamed sessions using their AI summaries.
+(defun claude-log-rename-sessions (&optional force)
+  "Rename sessions using their AI summaries.
 For each session that has a summary in the index but no
-custom-title in its JSONL file, slugify the summary and write it
-as a custom-title entry.  This makes the name visible in Claude
+custom-title in its JSONL file, write the summary as a
+custom-title entry.  This makes the name visible in Claude
 Code's /resume picker.
 
+With prefix argument FORCE, overwrite existing custom titles.
+This is useful after changing the title format (e.g. from
+slugified to full-text titles).
+
 Sessions must be summarized first via `claude-log-summarize-sessions'."
-  (interactive)
+  (interactive "P")
   (let* ((sessions (claude-log--read-sessions))
          (index (claude-log--read-index))
          (renamed 0)
@@ -1817,7 +1821,8 @@ Sessions must be summarized first via `claude-log-summarize-sessions'."
           (cl-incf no-summary))
          ((not (file-exists-p jsonl-file))
           (cl-incf skipped))
-         ((claude-log--session-has-custom-title-p jsonl-file)
+         ((and (not force)
+               (claude-log--session-has-custom-title-p jsonl-file))
           (cl-incf skipped))
          (t
           (claude-log--append-custom-title jsonl-file sid oneline)
