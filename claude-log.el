@@ -2141,7 +2141,8 @@ Returns non-nil if the user approves or the budget is not exceeded."
 (defun claude-log--search-send-selection (query filtered-sessions index)
   "Send the stage 2 selection request for QUERY over FILTERED-SESSIONS.
 INDEX is the session index for looking up summaries."
-  (let* ((prompt (claude-log--search-build-selection-prompt
+  (let* ((n (length filtered-sessions))
+         (prompt (claude-log--search-build-selection-prompt
                   query filtered-sessions index))
          (system claude-log--search-system-message)
          (resolved (claude-log--resolve-search-backend-and-model))
@@ -2150,8 +2151,7 @@ INDEX is the session index for looking up summaries."
          (gptel-use-tools nil))
     (if (claude-log--search-check-budget prompt system gptel-model)
         (progn
-          (message "Searching %d sessions with %s..."
-                   (length filtered-sessions) gptel-model)
+          (message "Searching %d session(s) with %s..." n gptel-model)
           (gptel-request prompt
             :system system
             :callback
@@ -2279,12 +2279,12 @@ clickable links to the matching logs."
         (user-error "Search aborted")))
     (setq claude-log--search-sessions-cache sessions
           claude-log--search-index-cache index)
-    (message "Analyzing search scope...")
     (let* ((scope-prompt (claude-log--search-build-scope-prompt query metadata))
            (resolved (claude-log--resolve-search-scope-backend-and-model))
            (gptel-backend (car resolved))
            (gptel-model (cdr resolved))
            (gptel-use-tools nil))
+      (message "Analyzing search scope with %s..." gptel-model)
       (gptel-request scope-prompt
         :system claude-log--search-scope-system-message
         :callback
@@ -2308,9 +2308,6 @@ full session list and index for filtering."
         (let ((truncated (> (length filtered) 100)))
           (when truncated
             (setq filtered (seq-take filtered 100)))
-          (message "Found %d matching session(s)%s, selecting relevant ones..."
-                   (length filtered)
-                   (if truncated " (capped at 100 most recent)" ""))
           (claude-log--search-send-selection query filtered index))))))
 
 ;;;;; Session rename
