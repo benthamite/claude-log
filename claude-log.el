@@ -1955,6 +1955,7 @@ Returns a plist with:
   :summarized    - count of sessions with summaries
   :unsummarized  - count of sessions without summaries"
   (let ((project-counts (make-hash-table :test #'equal))
+        (active-ids (claude-log--active-session-ids))
         (earliest nil)
         (latest nil)
         (summarized 0)
@@ -1975,8 +1976,10 @@ Returns a plist with:
               (setq earliest ts))
             (when (or (null latest) (and (numberp ts) (> ts latest)))
               (setq latest ts)))
-           ;; Empty session (sentinel): already processed, silently skip.
-           ((equal oneline claude-log--no-conversation-sentinel) nil)
+           ;; Empty session (sentinel) or active session: silently skip.
+           ((or (equal oneline claude-log--no-conversation-sentinel)
+                (member sid active-ids))
+            nil)
            ;; No summary at all: genuinely unsummarized.
            (t (cl-incf unsummarized))))))
     (let (projects)
