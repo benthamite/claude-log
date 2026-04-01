@@ -7,8 +7,12 @@
 
 (require 'ert)
 (require 'agent-log)
+(require 'agent-log-claude)
 
 ;;;;; Test helpers
+
+(defvar agent-log-test--claude-backend agent-log-claude--instance
+  "Claude backend instance for use in tests.")
 
 (defvar agent-log-test--dir nil
   "Temporary directory for the current test.")
@@ -139,63 +143,63 @@ the message content (string or list)."
 (ert-deftest agent-log-test-conversation-entry-p/user ()
   "Recognizes user entries."
   (let ((entry (list :type "user" :message (list :content "hello"))))
-    (should (agent-log--conversation-entry-p entry))))
+    (should (agent-log--conversation-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-conversation-entry-p/assistant ()
   "Recognizes assistant entries."
   (let ((entry (list :type "assistant" :message (list :content "hi"))))
-    (should (agent-log--conversation-entry-p entry))))
+    (should (agent-log--conversation-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-conversation-entry-p/progress-excluded ()
   "Excludes progress entries."
   (let ((entry (list :type "progress")))
-    (should-not (agent-log--conversation-entry-p entry))))
+    (should-not (agent-log--conversation-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-conversation-entry-p/system-entry-excluded ()
   "Excludes system-generated user entries."
   (let ((entry (list :type "user"
                      :message (list :content "<command-name>/commit</command-name>"))))
-    (should-not (agent-log--conversation-entry-p entry))))
+    (should-not (agent-log--conversation-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/command-name ()
   "Detects <command-name> system tag."
   (let ((entry (list :message (list :content "<command-name>/commit</command-name>"))))
-    (should (agent-log--system-entry-p entry))))
+    (should (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/task-notification ()
   "Detects <task-notification> system tag."
   (let ((entry (list :message (list :content "<task-notification>done</task-notification>"))))
-    (should (agent-log--system-entry-p entry))))
+    (should (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/teammate-message ()
   "Detects <teammate-message> system tag."
   (let ((entry (list :message (list :content "<teammate-message from=\"agent\">hi</teammate-message>"))))
-    (should (agent-log--system-entry-p entry))))
+    (should (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/local-command-stdout ()
   "Detects <local-command-stdout> system tag."
   (let ((entry (list :message (list :content "<local-command-stdout>output</local-command-stdout>"))))
-    (should (agent-log--system-entry-p entry))))
+    (should (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/normal-user-message ()
   "Does not flag normal user messages as system."
   (let ((entry (list :message (list :content "Fix the bug in main.py"))))
-    (should-not (agent-log--system-entry-p entry))))
+    (should-not (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/non-string-content ()
   "Does not flag entries with non-string content as system."
   (let ((entry (list :message (list :content '((:type "text" :text "hello"))))))
-    (should-not (agent-log--system-entry-p entry))))
+    (should-not (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/leading-whitespace ()
   "Detects system tags with leading whitespace."
   (let ((entry (list :message (list :content "  <command-name>/foo</command-name>"))))
-    (should (agent-log--system-entry-p entry))))
+    (should (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-system-entry-p/tag-with-space-after ()
   "Detects system tags that have a space after the tag name (e.g. attributes)."
   (let ((entry (list :message (list :content "<command-message type=\"info\">hello</command-message>"))))
-    (should (agent-log--system-entry-p entry))))
+    (should (agent-log--system-entry-p agent-log-test--claude-backend entry))))
 
 (ert-deftest agent-log-test-filter-conversation/mixed-entries ()
   "Filters to only user and assistant entries, excluding system entries."
@@ -204,7 +208,7 @@ the message content (string or list)."
                         (list :type "user" :message (list :content "<command-name>/foo</command-name>"))
                         (list :type "assistant" :message (list :content "hi"))
                         (list :type "result")))
-         (filtered (agent-log--filter-conversation entries)))
+         (filtered (agent-log--filter-conversation agent-log-test--claude-backend entries)))
     (should (= (length filtered) 2))
     (should (equal (plist-get (car filtered) :type) "user"))
     (should (equal (plist-get (cadr filtered) :type) "assistant"))))
@@ -246,7 +250,7 @@ the message content (string or list)."
   "Extracts text from string content."
   (let ((entries (list (list :type "user"
                              :message (list :content "Fix the bug")))))
-    (should (equal (agent-log--first-user-text entries) "Fix the bug"))))
+    (should (equal (agent-log--first-user-text agent-log-test--claude-backend entries) "Fix the bug"))))
 
 (ert-deftest agent-log-test-first-user-text/list-content ()
   "Extracts text from list content."
@@ -254,7 +258,7 @@ the message content (string or list)."
                              :message (list :content
                                             (list (list :type "text"
                                                         :text "Hello world")))))))
-    (should (equal (agent-log--first-user-text entries) "Hello world"))))
+    (should (equal (agent-log--first-user-text agent-log-test--claude-backend entries) "Hello world"))))
 
 (ert-deftest agent-log-test-first-user-text/skips-system-entries ()
   "Skips system entries to find first genuine user text."
@@ -262,13 +266,13 @@ the message content (string or list)."
                              :message (list :content "<command-name>/foo</command-name>"))
                        (list :type "user"
                              :message (list :content "Real question")))))
-    (should (equal (agent-log--first-user-text entries) "Real question"))))
+    (should (equal (agent-log--first-user-text agent-log-test--claude-backend entries) "Real question"))))
 
 (ert-deftest agent-log-test-first-user-text/no-user-entries ()
   "Returns nil when no user entries exist."
   (let ((entries (list (list :type "assistant"
                              :message (list :content "response")))))
-    (should (null (agent-log--first-user-text entries)))))
+    (should (null (agent-log--first-user-text agent-log-test--claude-backend entries)))))
 
 (ert-deftest agent-log-test-first-user-text/mixed-content-types ()
   "Finds text in content that mixes tool_result and text items."
@@ -278,7 +282,7 @@ the message content (string or list)."
                                                         :content "result")
                                                   (list :type "text"
                                                         :text "My question")))))))
-    (should (equal (agent-log--first-user-text entries) "My question"))))
+    (should (equal (agent-log--first-user-text agent-log-test--claude-backend entries) "My question"))))
 
 ;;;;; Slugification
 
@@ -442,7 +446,7 @@ Only truly unparseable inputs that signal errors return nil."
 
 (ert-deftest agent-log-test-encode-project-path/slashes-and-dots ()
   "Replaces slashes and dots with hyphens."
-  (let ((result (agent-log--encode-project-path "/home/user/my.project")))
+  (let ((result (agent-log-claude--encode-project-path "/home/user/my.project")))
     (should (not (string-match-p "[/.]" result)))
     (should (string-match-p "-home-user-my-project" result))))
 
@@ -555,8 +559,9 @@ Only truly unparseable inputs that signal errors return nil."
 
 (ert-deftest agent-log-test-summarize-edit/missing-fields ()
   "Handles Edit tool with missing fields."
-  (let ((result (agent-log--summarize-tool-input "Edit" (list))))
-    (should (string-match-p "\\?" result))))
+  (let ((agent-log--backend agent-log-test--claude-backend))
+    (let ((result (agent-log--summarize-tool-input "Edit" (list))))
+      (should (string-match-p "\\?" result)))))
 
 (ert-deftest agent-log-test-summarize-bash ()
   "Summarizes Bash tool input."
@@ -1005,32 +1010,32 @@ Only truly unparseable inputs that signal errors return nil."
 
 (ert-deftest agent-log-test-extract-message-text/string ()
   "Extracts text from string content."
-  (should (equal (agent-log--extract-message-text "hello") "hello")))
+  (should (equal (agent-log--extract-message-text agent-log-test--claude-backend "hello") "hello")))
 
 (ert-deftest agent-log-test-extract-message-text/list ()
   "Extracts text from list content, ignoring non-text items."
   (let ((content (list (list :type "thinking" :thinking "...")
                        (list :type "text" :text "answer")
                        (list :type "tool_use" :name "Bash"))))
-    (should (equal (agent-log--extract-message-text content) "answer"))))
+    (should (equal (agent-log--extract-message-text agent-log-test--claude-backend content) "answer"))))
 
 (ert-deftest agent-log-test-extract-message-text/multiple-texts ()
   "Joins multiple text items."
   (let ((content (list (list :type "text" :text "part 1")
                        (list :type "text" :text "part 2"))))
-    (should (equal (agent-log--extract-message-text content) "part 1\npart 2"))))
+    (should (equal (agent-log--extract-message-text agent-log-test--claude-backend content) "part 1\npart 2"))))
 
 (ert-deftest agent-log-test-extract-message-text/empty ()
   "Returns empty string for nil or non-list/string."
-  (should (equal (agent-log--extract-message-text nil) ""))
-  (should (equal (agent-log--extract-message-text 42) "")))
+  (should (equal (agent-log--extract-message-text agent-log-test--claude-backend nil) ""))
+  (should (equal (agent-log--extract-message-text agent-log-test--claude-backend 42) "")))
 
 (ert-deftest agent-log-test-extract-message-text/skips-empty-text ()
   "Skips empty and whitespace-only text items."
   (let ((content (list (list :type "text" :text "")
                        (list :type "text" :text "   ")
                        (list :type "text" :text "real"))))
-    (should (equal (agent-log--extract-message-text content) "real"))))
+    (should (equal (agent-log--extract-message-text agent-log-test--claude-backend content) "real"))))
 
 ;;;;; Conversation text extraction
 
