@@ -10,7 +10,7 @@
 #+texinfo_dir_title: Agent-Log: (agent-log)
 #+texinfo_dir_desc: Browse AI coding agent session logs in Emacs
 
-This manual describes the features and customization options for the Emacs Lisp file =agent-log.el=.
+This manual describes the features and customization options for the =agent-log= package (=agent-log.el= and its backend files).
 
 * Overview
 :PROPERTIES:
