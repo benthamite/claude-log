@@ -1,9 +1,9 @@
-;;; claude-log.el --- Browse Claude Code conversation logs  -*- lexical-binding: t; -*-
+;;; agent-log.el --- Browse AI coding agent session logs  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026  Pablo Stafforini
 
 ;; Author: Pablo Stafforini
-;; URL: https://github.com/benthamite/claude-log
+;; URL: https://github.com/benthamite/agent-log
 ;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.6"))
 ;; Keywords: tools
@@ -25,19 +25,20 @@
 
 ;;; Commentary:
 
-;; Browse and render Claude Code conversation logs stored as JSONL files.
-;; Maintains a mirror directory of pre-rendered Markdown files so that
-;; standard tools (consult-ripgrep, Dired, grep) work natively on
-;; readable content.
+;; Browse and render AI coding agent session logs stored as JSONL files.
+;; Supports multiple backends (Claude Code, Codex, etc.) via a generic
+;; interface.  Maintains a mirror directory of pre-rendered Markdown
+;; files so that standard tools (consult-ripgrep, Dired, grep) work
+;; natively on readable content.
 ;;
 ;; Entry points:
-;;   `claude-log-browse-sessions'        - pick a session from history
-;;   `claude-log-open-latest'            - open the most recent session
-;;   `claude-log-open-rendered-directory' - browse rendered files in Dired
-;;   `claude-log-sync-all'               - render all unrendered/stale sessions
-;;   `claude-log-open-file'              - open a specific JSONL file
-;;   `claude-log-resume-session'         - resume session in Claude Code
-;;   `claude-log-open-session-at-point'  - open log for session in current buffer
+;;   `agent-log-browse-sessions'        - pick a session from history
+;;   `agent-log-open-latest'            - open the most recent session
+;;   `agent-log-open-rendered-directory' - browse rendered files in Dired
+;;   `agent-log-sync-all'               - render all unrendered/stale sessions
+;;   `agent-log-open-file'              - open a specific JSONL file
+;;   `agent-log-resume-session'         - resume session in the coding agent
+;;   `agent-log-open-session-at-point'  - open log for session in current buffer
 
 ;;; Code:
 
@@ -62,20 +63,20 @@
 
 ;;;;; Customization
 
-(defgroup claude-log nil
-  "Browse Claude Code conversation logs."
+(defgroup agent-log nil
+  "Browse AI coding agent session logs."
   :group 'tools
-  :prefix "claude-log-")
+  :prefix "agent-log-")
 
-(defcustom claude-log-directory "~/.claude"
+(defcustom agent-log-directory "~/.claude"
   "Root directory of Claude Code configuration."
   :type 'directory)
 
-(defcustom claude-log-rendered-directory "~/.claude/rendered"
+(defcustom agent-log-rendered-directory "~/.claude/rendered"
   "Directory where rendered Markdown files are stored."
   :type 'directory)
 
-(defcustom claude-log-show-thinking 'collapsed
+(defcustom agent-log-show-thinking 'collapsed
   "How to display assistant thinking blocks.
 `hidden' omits them entirely, `collapsed' shows them folded under
 a heading, `visible' shows them expanded."
@@ -83,7 +84,7 @@ a heading, `visible' shows them expanded."
                  (const :tag "Collapsed" collapsed)
                  (const :tag "Visible" visible)))
 
-(defcustom claude-log-show-tools 'collapsed
+(defcustom agent-log-show-tools 'collapsed
   "How to display tool-use and tool-result sections.
 `hidden' omits them entirely, `collapsed' shows them folded under
 a heading, `visible' shows them expanded."
@@ -91,66 +92,66 @@ a heading, `visible' shows them expanded."
                  (const :tag "Collapsed" collapsed)
                  (const :tag "Visible" visible)))
 
-(defcustom claude-log-timestamp-format "%Y-%m-%d %H:%M:%S"
+(defcustom agent-log-timestamp-format "%Y-%m-%d %H:%M:%S"
   "Format string for timestamps in rendered output."
   :type 'string)
 
-(defcustom claude-log-max-tool-input-length 200
+(defcustom agent-log-max-tool-input-length 200
   "Maximum characters to show for tool input summaries."
   :type 'integer)
 
-(defcustom claude-log-max-tool-result-length 500
+(defcustom agent-log-max-tool-result-length 500
   "Maximum characters to show for tool result content."
   :type 'integer)
 
-(defcustom claude-log-live-update t
+(defcustom agent-log-live-update t
   "Whether to watch the JSONL file for live updates."
   :type 'boolean)
 
-(defcustom claude-log-group-by-project t
+(defcustom agent-log-group-by-project t
   "Whether to group sessions by project in the browser.
-When non-nil, `claude-log-browse-sessions' first prompts for a
+When non-nil, `agent-log-browse-sessions' first prompts for a
 project, then for a session within that project."
   :type 'boolean)
 
-(defcustom claude-log-display-width 60
+(defcustom agent-log-display-width 60
   "Maximum width of the first-message column in the session browser."
   :type 'integer)
 
-(defcustom claude-log-slug-max-length 50
+(defcustom agent-log-slug-max-length 50
   "Maximum length of the slug portion of rendered filenames."
   :type 'integer)
 
-(defcustom claude-log-summary-backend nil
+(defcustom agent-log-summary-backend nil
   "The gptel backend name for summary generation, e.g. \"Gemini\" or \"Claude\".
-When nil, the backend is inferred from `claude-log-summary-model', falling
+When nil, the backend is inferred from `agent-log-summary-model', falling
 back to `gptel-backend'."
   :type '(choice (const :tag "Infer from model or use gptel default" nil)
                  (string :tag "Backend name")))
 
-(defcustom claude-log-summary-model nil
+(defcustom agent-log-summary-model nil
   "The gptel model for summary generation, e.g. `claude-haiku-4-5-20251001'.
 When nil, defaults to `gptel-model'."
   :type '(choice (const :tag "Use gptel default" nil)
                  (symbol :tag "Model name")))
 
-(defcustom claude-log-summary-max-content-length 8000
+(defcustom agent-log-summary-max-content-length 8000
   "Maximum characters of conversation text sent to the LLM for summarization."
   :type 'integer)
 
-(defcustom claude-log-sync-on-session-end nil
+(defcustom agent-log-sync-on-session-end nil
   "Whether to sync and summarize when a Claude Code session ends.
-When non-nil, `claude-log-sync-all' and `claude-log-summarize-sessions'
+When non-nil, `agent-log-sync-all' and `agent-log-summarize-sessions'
 run automatically after a session terminates.  Requires the `claude-code'
 package and a \"Stop\" hook configured in Claude Code settings."
   :type 'boolean
   :set (lambda (sym val)
          (set-default sym val)
          (if val
-             (add-hook 'claude-code-event-hook #'claude-log--session-end-handler)
-           (remove-hook 'claude-code-event-hook #'claude-log--session-end-handler))))
+             (add-hook 'claude-code-event-hook #'agent-log--session-end-handler)
+           (remove-hook 'claude-code-event-hook #'agent-log--session-end-handler))))
 
-(defcustom claude-log-auto-rename-sessions nil
+(defcustom agent-log-auto-rename-sessions nil
   "When non-nil, rename sessions automatically after summarization.
 Each time a session receives an AI summary, its one-line summary
 is slugified and written as a custom-title entry in the session
@@ -159,34 +160,34 @@ JSONL file, making it visible in Claude Code's /resume picker."
 
 ;;;;; AI search
 
-(defcustom claude-log-search-scope-backend nil
+(defcustom agent-log-search-scope-backend nil
   "The gptel backend name for search scope narrowing (stage 1).
-When nil, the backend is inferred from `claude-log-search-scope-model',
+When nil, the backend is inferred from `agent-log-search-scope-model',
 falling back to `gptel-backend'."
   :type '(choice (const :tag "Infer from model or use gptel default" nil)
                  (string :tag "Backend name")))
 
-(defcustom claude-log-search-scope-model nil
+(defcustom agent-log-search-scope-model nil
   "The gptel model for search scope narrowing (stage 1).
 When nil, defaults to `gptel-model'.  A small, fast model (e.g.
 `claude-haiku-4-5-20251001') is recommended."
   :type '(choice (const :tag "Use gptel default" nil)
                  (symbol :tag "Model name")))
 
-(defcustom claude-log-search-backend nil
+(defcustom agent-log-search-backend nil
   "The gptel backend name for search selection (stage 2).
-When nil, the backend is inferred from `claude-log-search-model',
+When nil, the backend is inferred from `agent-log-search-model',
 falling back to `gptel-backend'."
   :type '(choice (const :tag "Infer from model or use gptel default" nil)
                  (string :tag "Backend name")))
 
-(defcustom claude-log-search-model nil
+(defcustom agent-log-search-model nil
   "The gptel model for search selection (stage 2).
 When nil, defaults to `gptel-model'."
   :type '(choice (const :tag "Use gptel default" nil)
                  (symbol :tag "Model name")))
 
-(defcustom claude-log-search-budget '(tokens . 50000)
+(defcustom agent-log-search-budget '(tokens . 50000)
   "Per-request budget threshold for AI search, as a (TYPE . LIMIT) cons cell.
 TYPE is `tokens' or `dollars'.
 
@@ -202,48 +203,48 @@ the `gptel-plus' package; if unavailable, the budget is not enforced."
 
 ;;;;; Internal variables
 
-(defvar-local claude-log--source-file nil
+(defvar-local agent-log--source-file nil
   "Path to the JSONL file being displayed.")
 
-(defvar-local claude-log--file-offset 0
+(defvar-local agent-log--file-offset 0
   "Byte offset into the JSONL file for incremental reads.")
 
-(defvar-local claude-log--partial-line ""
+(defvar-local agent-log--partial-line ""
   "Leftover partial line from the last incremental read.")
 
-(defvar-local claude-log--partial-bytes nil
+(defvar-local agent-log--partial-bytes nil
   "Unibyte string of leftover bytes from an incomplete UTF-8 sequence.
 When a chunk boundary splits a multi-byte character, the trailing
 bytes are saved here and prepended to the next raw read.")
 
-(defvar-local claude-log--watcher nil
+(defvar-local agent-log--watcher nil
   "File-notify descriptor for live updates.")
 
-(defvar-local claude-log--session-project nil
+(defvar-local agent-log--session-project nil
   "Project name for the current session.")
 
-(defvar-local claude-log--session-date nil
+(defvar-local agent-log--session-date nil
   "Date string for the current session.")
 
-(defvar-local claude-log--session-id nil
+(defvar-local agent-log--session-id nil
   "Session ID (UUID) for the current buffer.")
 
-(defvar-local claude-log--rendered-file nil
+(defvar-local agent-log--rendered-file nil
   "Path to the rendered .md file for the current session.")
 
-(defvar claude-log--summarize-active nil
+(defvar agent-log--summarize-active nil
   "Non-nil when summary generation is in progress.")
 
-(defvar claude-log--summarize-stop nil
+(defvar agent-log--summarize-stop nil
   "When non-nil, stop summary generation after the current request.")
 
-(defvar claude-log--summarize-generation 0
+(defvar agent-log--summarize-generation 0
   "Generation counter for summary runs.
-Incremented each time `claude-log-summarize-sessions' starts a new run.
+Incremented each time `agent-log-summarize-sessions' starts a new run.
 Callbacks and timers from a previous generation are ignored, preventing
 stale callbacks from forking duplicate chains.")
 
-(defvar claude-log--summarize-request-id nil
+(defvar agent-log--summarize-request-id nil
   "Nonce for the current in-flight gptel request.
 Set before each `gptel-request' and consumed by the first callback
 invocation.  Subsequent callbacks for the same request see a mismatch
@@ -251,7 +252,7 @@ and are silently ignored, preventing chain forking from streaming.")
 
 ;; Concurrency control for async summary generation
 ;; -------------------------------------------------
-;; `claude-log--summarize-generation' and `claude-log--summarize-request-id'
+;; `agent-log--summarize-generation' and `agent-log--summarize-request-id'
 ;; work together to prevent duplicate chains.  gptel may invoke a callback
 ;; multiple times (e.g. partial streaming chunks), and any callback that
 ;; schedules the next request can fork the chain.  The generation counter
@@ -259,94 +260,94 @@ and are silently ignored, preventing chain forking from streaming.")
 ;; request-id nonce ensures only the *first* callback per request advances
 ;; the chain.  Both must match for a callback to take effect.
 
-(defvar claude-log--search-sessions-cache nil
+(defvar agent-log--search-sessions-cache nil
   "Cached sessions alist for the current search.
 Used when following links in the result buffer.")
 
-(defvar claude-log--search-index-cache nil
+(defvar agent-log--search-index-cache nil
   "Cached index hash table for the current search.
 Used when following links in the result buffer.")
 
 ;;;;; Entry points
 
 ;;;###autoload
-(defun claude-log-browse-sessions ()
-  "Browse Claude Code sessions and open the selected one.
-When `claude-log-group-by-project' is non-nil, first prompts for
+(defun agent-log-browse-sessions ()
+  "Browse sessions and open the selected one.
+When `agent-log-group-by-project' is non-nil, first prompts for
 a project, then for a session within that project."
   (interactive)
-  (let ((sessions (claude-log--read-sessions)))
-    (if claude-log-group-by-project
-        (claude-log--browse-grouped sessions)
-      (claude-log--browse-flat sessions))))
+  (let ((sessions (agent-log--read-sessions)))
+    (if agent-log-group-by-project
+        (agent-log--browse-grouped sessions)
+      (agent-log--browse-flat sessions))))
 
 ;;;###autoload
-(defun claude-log-open-file (file)
-  "Open and render the Claude Code JSONL log at FILE."
+(defun agent-log-open-file (file)
+  "Open and render the JSONL session log at FILE."
   (interactive "fJSONL file: ")
   (let* ((file (expand-file-name file))
          (session-id (file-name-sans-extension (file-name-nondirectory file)))
-         (entries (claude-log--parse-jsonl-file file))
-         (first-msg (claude-log--find-first-message entries))
-         (progress (claude-log--find-progress-entry entries))
+         (entries (agent-log--parse-jsonl-file file))
+         (first-msg (agent-log--find-first-message entries))
+         (progress (agent-log--find-progress-entry entries))
          (ts-iso (when first-msg (plist-get first-msg :timestamp)))
          (epoch-ms (when (stringp ts-iso)
-                     (claude-log--iso-to-epoch-ms ts-iso)))
-         (display (or (claude-log--first-user-text entries) ""))
+                     (agent-log--iso-to-epoch-ms ts-iso)))
+         (display (or (agent-log--first-user-text entries) ""))
          (project (when progress (or (plist-get progress :cwd) "")))
          (metadata (list :file file
                          :timestamp epoch-ms
                          :project (or project "")
                          :display display)))
-    (claude-log--open-rendered session-id metadata)))
+    (agent-log--open-rendered session-id metadata)))
 
 ;;;###autoload
-(defun claude-log-open-latest ()
-  "Open the most recent Claude Code session."
+(defun agent-log-open-latest ()
+  "Open the most recent session."
   (interactive)
-  (let ((sessions (claude-log--read-sessions)))
+  (let ((sessions (agent-log--read-sessions)))
     (unless sessions
       (user-error "No sessions found"))
     (let* ((latest (car sessions))
            (session-id (car latest))
            (metadata (cdr latest)))
-      (claude-log--open-rendered session-id metadata))))
+      (agent-log--open-rendered session-id metadata))))
 
 ;;;###autoload
-(defun claude-log-open-rendered-directory ()
+(defun agent-log-open-rendered-directory ()
   "Open the rendered Markdown directory in Dired."
   (interactive)
-  (let ((dir (expand-file-name claude-log-rendered-directory)))
+  (let ((dir (expand-file-name agent-log-rendered-directory)))
     (unless (file-directory-p dir)
       (make-directory dir t))
     (dired dir)))
 
 ;;;###autoload
-(defun claude-log-open-session (session-id)
-  "Open the Claude Code session with SESSION-ID."
+(defun agent-log-open-session (session-id)
+  "Open the session with SESSION-ID."
   (interactive "sSession ID: ")
-  (let ((file (claude-log--find-session-file session-id)))
+  (let ((file (agent-log--find-session-file session-id)))
     (unless file
       (user-error "No JSONL file found for session %s" session-id))
-    (claude-log-open-file file)))
+    (agent-log-open-file file)))
 
 ;;;###autoload
-(defun claude-log-sync-all (&optional callback)
+(defun agent-log-sync-all (&optional callback)
   "Render all unrendered or stale sessions.
 Uses timers to avoid blocking Emacs.  When CALLBACK is non-nil,
 call it with no arguments after the last session is rendered."
   (interactive)
-  (let* ((sessions (claude-log--read-sessions))
-         (index (claude-log--read-index))
-         (pending (claude-log--pending-sessions sessions index)))
+  (let* ((sessions (agent-log--read-sessions))
+         (index (agent-log--read-index))
+         (pending (agent-log--pending-sessions sessions index)))
     (if (null pending)
         (progn
           (message "All %d sessions up to date" (length sessions))
           (when callback (funcall callback)))
       (message "Syncing %d session(s)..." (length pending))
-      (claude-log--sync-next pending 0 (length pending) callback))))
+      (agent-log--sync-next pending 0 (length pending) callback))))
 
-(defun claude-log--pending-sessions (sessions index)
+(defun agent-log--pending-sessions (sessions index)
   "Return sessions from SESSIONS that need rendering per INDEX."
   (seq-filter
    (lambda (session)
@@ -360,7 +361,7 @@ call it with no arguments after the last session is rendered."
        (not (and rpath (file-exists-p rpath) csize jsize (= csize jsize)))))
    sessions))
 
-(defun claude-log--sync-next (remaining done total &optional callback)
+(defun agent-log--sync-next (remaining done total &optional callback)
   "Render the next session in REMAINING.
 DONE sessions rendered so far out of TOTAL.  When CALLBACK is
 non-nil, call it with no arguments after the last session."
@@ -372,18 +373,18 @@ non-nil, call it with no arguments after the last session."
            (sid (car session))
            (meta (cdr session)))
       (condition-case err
-          (let ((result (claude-log--render-to-file sid meta)))
-            (claude-log--index-update-props
+          (let ((result (agent-log--render-to-file sid meta)))
+            (agent-log--index-update-props
              sid (list :file (car result) :jsonl-size (cdr result))))
         (error (message "Failed to render %s: %s"
                         sid (error-message-string err))))
       ;; Yield to the event loop between sessions to keep Emacs responsive
       ;; and avoid deep recursion when processing hundreds of sessions.
-      (run-with-timer 0 nil #'claude-log--sync-next
+      (run-with-timer 0 nil #'agent-log--sync-next
                       (cdr remaining) (1+ done) total callback))))
 
-(defun claude-log--activate-mode ()
-  "Activate `claude-log-mode' with parent mode hooks suppressed.
+(defun agent-log--activate-mode ()
+  "Activate `agent-log-mode' with parent mode hooks suppressed.
 Suppresses `markdown-mode-hook' and `markdown-view-mode-hook' (which
 may set up editing-oriented features inappropriate for a read-only
 rendered buffer) and flycheck's global-mode hook (which would try to
@@ -394,36 +395,36 @@ spurious checker errors and background processes)."
         (after-change-major-mode-hook
          (remq 'flycheck-global-mode-enable-in-buffers
                after-change-major-mode-hook)))
-    (claude-log-mode)))
+    (agent-log-mode)))
 
 ;;;;; Index file
 
-(defun claude-log--index-file ()
+(defun agent-log--index-file ()
   "Return the path to the rendered-directory index file."
-  (expand-file-name "_index.el" claude-log-rendered-directory))
+  (expand-file-name "_index.el" agent-log-rendered-directory))
 
-(defun claude-log--read-index ()
+(defun agent-log--read-index ()
   "Read the index hash table from disk.
 Returns an empty hash table if the file does not exist or is corrupt."
-  (let ((file (claude-log--index-file)))
+  (let ((file (agent-log--index-file)))
     (condition-case err
         (if (file-exists-p file)
             (let ((obj (with-temp-buffer
                          (insert-file-contents file)
                          (read (current-buffer)))))
               (if (hash-table-p obj) obj
-                (message "claude-log: index file corrupt (not a hash table), rebuilding")
+                (message "agent-log: index file corrupt (not a hash table), rebuilding")
                 (make-hash-table :test #'equal)))
           (make-hash-table :test #'equal))
       (error
-       (message "claude-log: failed to read index: %s" (error-message-string err))
+       (message "agent-log: failed to read index: %s" (error-message-string err))
        (make-hash-table :test #'equal)))))
 
-(defun claude-log--write-index (index)
+(defun agent-log--write-index (index)
   "Write INDEX hash table to disk atomically.
 Writes to a temporary file first, then renames to avoid corruption
 if Emacs crashes mid-write."
-  (let* ((file (claude-log--index-file))
+  (let* ((file (agent-log--index-file))
          (dir (file-name-directory file)))
     (make-directory dir t)
     (let ((tmp (make-temp-file (expand-file-name "_index-tmp" dir) nil ".el")))
@@ -439,7 +440,7 @@ if Emacs crashes mid-write."
          (ignore-errors (delete-file tmp))
          (signal (car err) (cdr err)))))))
 
-(defun claude-log--index-merge (index session-id props)
+(defun agent-log--index-merge (index session-id props)
   "Merge PROPS into the INDEX entry for SESSION-ID.
 Existing properties not in PROPS are preserved."
   (let ((existing (or (gethash session-id index) '())))
@@ -447,34 +448,34 @@ Existing properties not in PROPS are preserved."
              do (setq existing (plist-put existing key val)))
     (puthash session-id existing index)))
 
-(defun claude-log--index-update-props (session-id props)
+(defun agent-log--index-update-props (session-id props)
   "Atomically merge PROPS into the disk index entry for SESSION-ID.
 Reads the current index from disk, merges PROPS, and writes back,
 ensuring concurrent operations do not clobber each other."
-  (let ((index (claude-log--read-index)))
-    (claude-log--index-merge index session-id props)
-    (claude-log--write-index index)))
+  (let ((index (agent-log--read-index)))
+    (agent-log--index-merge index session-id props)
+    (agent-log--write-index index)))
 
-(defun claude-log--index-update (session-id rendered-path jsonl-size)
+(defun agent-log--index-update (session-id rendered-path jsonl-size)
   "Update the index entry for SESSION-ID with RENDERED-PATH and JSONL-SIZE."
-  (claude-log--index-update-props
+  (agent-log--index-update-props
    session-id (list :file rendered-path :jsonl-size jsonl-size)))
 
 ;;;;; Slug and filepath
 
-(defun claude-log--slugify (text)
+(defun agent-log--slugify (text)
   "Convert TEXT to a filename-safe slug.
 Lowercases, replaces non-alphanumeric runs with hyphens,
-and truncates to `claude-log-slug-max-length'."
+and truncates to `agent-log-slug-max-length'."
   (let* ((slug (downcase (or text "")))
          (slug (replace-regexp-in-string "[^a-z0-9]+" "-" slug))
          (slug (replace-regexp-in-string "\\`-+\\|-+\\'" "" slug))
-         (slug (if (> (length slug) claude-log-slug-max-length)
-                   (substring slug 0 claude-log-slug-max-length)
+         (slug (if (> (length slug) agent-log-slug-max-length)
+                   (substring slug 0 agent-log-slug-max-length)
                  slug)))
     (if (string-empty-p slug) "untitled" slug)))
 
-(defun claude-log--rendered-filepath (_session-id metadata)
+(defun agent-log--rendered-filepath (_session-id metadata)
   "Compute the rendered .md filepath for a session.
 METADATA is a plist with :timestamp, :project, :display."
   (let* ((ts (plist-get metadata :timestamp))
@@ -483,19 +484,19 @@ METADATA is a plist with :timestamp, :project, :display."
                                            (seconds-to-time (/ ts 1000.0)))
                      "unknown"))
          (display (or (plist-get metadata :display) ""))
-         (slug (claude-log--slugify display))
-         (project (claude-log--short-project
+         (slug (agent-log--slugify display))
+         (project (agent-log--short-project
                    (or (plist-get metadata :project) "")))
-         (project-dir (expand-file-name project claude-log-rendered-directory))
+         (project-dir (expand-file-name project agent-log-rendered-directory))
          (filename (format "%s_%s.md" date-str slug)))
     (expand-file-name filename project-dir)))
 
-(defun claude-log--first-user-text (entries)
+(defun agent-log--first-user-text (entries)
   "Return the text of the first user message in ENTRIES."
   (when-let* ((first-user (seq-find
                            (lambda (e)
                              (and (equal (plist-get e :type) "user")
-                                  (not (claude-log--system-entry-p e))))
+                                  (not (agent-log--system-entry-p e))))
                            entries))
               (message (plist-get first-user :message))
               (content (plist-get message :content)))
@@ -509,7 +510,7 @@ METADATA is a plist with :timestamp, :project, :display."
         (plist-get text-item :text)))
      (t nil))))
 
-(defun claude-log--iso-to-epoch-ms (ts)
+(defun agent-log--iso-to-epoch-ms (ts)
   "Convert ISO 8601 timestamp TS to epoch milliseconds."
   (condition-case nil
       (truncate (* (float-time (date-to-time ts)) 1000))
@@ -517,7 +518,7 @@ METADATA is a plist with :timestamp, :project, :display."
 
 ;;;;; Render to file
 
-(defun claude-log--render-front-matter (session-id jsonl-file jsonl-size)
+(defun agent-log--render-front-matter (session-id jsonl-file jsonl-size)
   "Generate front matter comments for a rendered file.
 SESSION-ID is the UUID, JSONL-FILE the source path,
 JSONL-SIZE the source file size in bytes."
@@ -530,51 +531,51 @@ JSONL-SIZE the source file size in bytes."
           (format-time-string "%Y-%m-%dT%H:%M:%S")
           (or jsonl-size 0)))
 
-(defun claude-log--extract-session-metadata-from-entries (entries)
+(defun agent-log--extract-session-metadata-from-entries (entries)
   "Extract project and date from ENTRIES as a plist.
 Returns (:project SHORT-NAME :date DATE-STRING)."
-  (let* ((first-msg (claude-log--find-first-message entries))
-         (progress (claude-log--find-progress-entry entries))
+  (let* ((first-msg (agent-log--find-first-message entries))
+         (progress (agent-log--find-progress-entry entries))
          (date (when first-msg
-                 (claude-log--format-iso-timestamp
+                 (agent-log--format-iso-timestamp
                   (plist-get first-msg :timestamp))))
          (project (when progress (or (plist-get progress :cwd) ""))))
-    (list :project (claude-log--short-project (or project ""))
+    (list :project (agent-log--short-project (or project ""))
           :date (or date "unknown"))))
 
-(defun claude-log--render-to-file (session-id metadata &optional output-path)
+(defun agent-log--render-to-file (session-id metadata &optional output-path)
   "Render the JSONL for SESSION-ID to a Markdown file.
 METADATA is a plist with :file, :timestamp, :project, :display.
 If OUTPUT-PATH is given, write there; otherwise compute from METADATA.
 Returns (RENDERED-PATH . JSONL-SIZE)."
   (let* ((jsonl-file (plist-get metadata :file))
-         (entries (claude-log--parse-jsonl-file jsonl-file))
-         (conversation (claude-log--filter-conversation entries))
+         (entries (agent-log--parse-jsonl-file jsonl-file))
+         (conversation (agent-log--filter-conversation entries))
          (rendered-path (or output-path
-                            (claude-log--rendered-filepath session-id metadata)))
+                            (agent-log--rendered-filepath session-id metadata)))
          (jsonl-size (file-attribute-size (file-attributes jsonl-file)))
-         (session-meta (claude-log--extract-session-metadata-from-entries
+         (session-meta (agent-log--extract-session-metadata-from-entries
                         entries)))
     (make-directory (file-name-directory rendered-path) t)
     (with-temp-file rendered-path
-      (insert (claude-log--render-front-matter
+      (insert (agent-log--render-front-matter
                session-id jsonl-file jsonl-size))
       (let ((project (plist-get session-meta :project)))
         (when (equal project "unknown")
-          (setq project (claude-log--short-project
+          (setq project (agent-log--short-project
                          (or (plist-get metadata :project) ""))))
         (insert (format "# Session: %s — %s\n\n"
                         project
                         (plist-get session-meta :date))))
       (dolist (entry conversation)
-        (insert (claude-log--render-entry entry))))
+        (insert (agent-log--render-entry entry))))
     (cons rendered-path jsonl-size)))
 
-(defun claude-log--ensure-rendered (session-id metadata)
+(defun agent-log--ensure-rendered (session-id metadata)
   "Ensure SESSION-ID has an up-to-date rendered .md file.
 METADATA is a plist with :file, :timestamp, :project, :display.
 Returns the path to the rendered file."
-  (let* ((index (claude-log--read-index))
+  (let* ((index (agent-log--read-index))
          (index-entry (gethash session-id index))
          (rendered-path (when index-entry (plist-get index-entry :file)))
          (cached-size (when index-entry (plist-get index-entry :jsonl-size)))
@@ -585,49 +586,49 @@ Returns the path to the rendered file."
              cached-size current-size
              (= cached-size current-size))
         rendered-path
-      (let ((result (claude-log--render-to-file session-id metadata)))
-        (claude-log--index-update-props
+      (let ((result (agent-log--render-to-file session-id metadata)))
+        (agent-log--index-update-props
          session-id (list :file (car result) :jsonl-size (cdr result)))
         (car result)))))
 
-(defun claude-log--open-rendered (session-id metadata)
+(defun agent-log--open-rendered (session-id metadata)
   "Open the rendered .md file for SESSION-ID.
 METADATA is a plist with :file, :timestamp, :project, :display."
-  (let* ((rendered-path (claude-log--ensure-rendered session-id metadata))
+  (let* ((rendered-path (agent-log--ensure-rendered session-id metadata))
          (buf (find-file-noselect rendered-path)))
     (with-current-buffer buf
-      (claude-log--activate-mode)
-      (setq claude-log--source-file (plist-get metadata :file)
-            claude-log--session-id session-id
-            claude-log--rendered-file rendered-path
-            claude-log--session-project (plist-get metadata :project))
-      (claude-log--record-offset)
-      (when (and claude-log-live-update (not claude-log--watcher))
-        (claude-log--start-watcher))
-      (claude-log--collapse-as-configured)
-      (claude-log--maybe-insert-summary session-id)
+      (agent-log--activate-mode)
+      (setq agent-log--source-file (plist-get metadata :file)
+            agent-log--session-id session-id
+            agent-log--rendered-file rendered-path
+            agent-log--session-project (plist-get metadata :project))
+      (agent-log--record-offset)
+      (when (and agent-log-live-update (not agent-log--watcher))
+        (agent-log--start-watcher))
+      (agent-log--collapse-as-configured)
+      (agent-log--maybe-insert-summary session-id)
       (goto-char (point-min))
       (set-buffer-modified-p nil))
     (pop-to-buffer buf)))
 
-(defun claude-log--append-to-file (file text)
+(defun agent-log--append-to-file (file text)
   "Append TEXT to FILE on disk."
   (write-region text nil file t 'quiet))
 
 ;;;;; Session browser
 
-(defun claude-log--read-sessions ()
+(defun agent-log--read-sessions ()
   "Parse `history.jsonl' and return alist of session-id to metadata.
 Each value is a plist (:display :timestamp :project :file :file-dir).
 The :project field reflects the most recent CWD among sessions
 sharing the same file directory, so it stays correct after project
 renames or profile migrations."
-  (let ((history-file (expand-file-name "history.jsonl" claude-log-directory))
+  (let ((history-file (expand-file-name "history.jsonl" agent-log-directory))
         (sessions (make-hash-table :test #'equal))
-        (file-index (claude-log--build-session-file-index)))
+        (file-index (agent-log--build-session-file-index)))
     (unless (file-exists-p history-file)
       (user-error "History file not found: %s" history-file))
-    (dolist (entry (claude-log--parse-jsonl-file history-file))
+    (dolist (entry (agent-log--parse-jsonl-file history-file))
       (let ((sid (plist-get entry :sessionId)))
         (when sid
           (puthash sid entry sessions))))
@@ -641,7 +642,7 @@ renames or profile migrations."
                      (ts (plist-get entry :timestamp)))
            (let ((existing (gethash dir dir-best-project)))
              (when (or (null existing)
-                       (claude-log--timestamp> ts (car existing)))
+                       (agent-log--timestamp> ts (car existing)))
                (puthash dir (cons ts proj) dir-best-project)))))
        sessions)
       (let (result)
@@ -661,16 +662,16 @@ renames or profile migrations."
                      result))))
          sessions)
         (sort result (lambda (a b)
-                       (claude-log--timestamp>
+                       (agent-log--timestamp>
                         (plist-get (cdr a) :timestamp)
                         (plist-get (cdr b) :timestamp))))))))
 
-(defun claude-log--build-session-file-index ()
+(defun agent-log--build-session-file-index ()
   "Build a hash table mapping session-id to JSONL file path.
 Scans the projects directory once, which is much faster than
 probing per session."
   (let ((index (make-hash-table :test #'equal))
-        (projects-dir (expand-file-name "projects" claude-log-directory)))
+        (projects-dir (expand-file-name "projects" agent-log-directory)))
     (when (file-directory-p projects-dir)
       (dolist (dir (directory-files projects-dir t "^[^.]"))
         (when (file-directory-p dir)
@@ -680,9 +681,9 @@ probing per session."
               (puthash sid file index))))))
     index))
 
-(defun claude-log--find-session-file (session-id)
+(defun agent-log--find-session-file (session-id)
   "Find the JSONL file for SESSION-ID under the projects directory."
-  (let ((projects-dir (expand-file-name "projects" claude-log-directory)))
+  (let ((projects-dir (expand-file-name "projects" agent-log-directory)))
     (when (file-directory-p projects-dir)
       (cl-block nil
         (dolist (dir (directory-files projects-dir t "^[^.]"))
@@ -691,35 +692,35 @@ probing per session."
               (when (file-exists-p file)
                 (cl-return file)))))))))
 
-(defun claude-log--browse-flat (sessions)
+(defun agent-log--browse-flat (sessions)
   "Present all SESSIONS in a single `completing-read'."
-  (let* ((candidates (claude-log--build-candidates sessions))
-         (selected (claude-log--completing-read "Session: " candidates))
+  (let* ((candidates (agent-log--build-candidates sessions))
+         (selected (agent-log--completing-read "Session: " candidates))
          (value (alist-get selected candidates nil nil #'equal))
          (session-id (car value))
          (metadata (cdr value)))
-    (claude-log--open-rendered session-id metadata)))
+    (agent-log--open-rendered session-id metadata)))
 
-(defun claude-log--browse-grouped (sessions)
+(defun agent-log--browse-grouped (sessions)
   "Present SESSIONS grouped by project: first pick project, then session."
-  (let* ((grouped (claude-log--group-by-project sessions))
+  (let* ((grouped (agent-log--group-by-project sessions))
          (project-names (mapcar #'car grouped))
-         (project (claude-log--completing-read "Project: " project-names))
+         (project (agent-log--completing-read "Project: " project-names))
          (project-sessions (alist-get project grouped nil nil #'equal))
-         (candidates (claude-log--build-candidates project-sessions))
-         (selected (claude-log--completing-read "Session: " candidates))
+         (candidates (agent-log--build-candidates project-sessions))
+         (selected (agent-log--completing-read "Session: " candidates))
          (value (alist-get selected candidates nil nil #'equal))
          (session-id (car value))
          (metadata (cdr value)))
-    (claude-log--open-rendered session-id metadata)))
+    (agent-log--open-rendered session-id metadata)))
 
-(defun claude-log--completing-read (prompt collection)
+(defun agent-log--completing-read (prompt collection)
   "Read from COLLECTION with PROMPT, preserving display order."
   (completing-read prompt
-                   (claude-log--preserve-order-table collection)
+                   (agent-log--preserve-order-table collection)
                    nil t))
 
-(defun claude-log--group-by-project (sessions)
+(defun agent-log--group-by-project (sessions)
   "Group SESSIONS into an alist of (project-name . sessions).
 Groups by the full :project path so sessions that share a
 project stay together even across file directories.
@@ -730,7 +731,7 @@ Projects are sorted by most recent session timestamp."
              (existing (gethash project groups)))
         (puthash project (append existing (list session)) groups)))
     (let* ((full-paths (hash-table-keys groups))
-           (display-names (claude-log--unique-project-names full-paths))
+           (display-names (agent-log--unique-project-names full-paths))
            result)
       (maphash (lambda (project group-sessions)
                  (let ((name (cdr (assoc project display-names))))
@@ -740,14 +741,14 @@ Projects are sorted by most recent session timestamp."
       ;; Each element is (project (sid . plist) ...), so cadr is the
       ;; first session and cdadr is its metadata plist.
       (sort result (lambda (a b)
-                     (claude-log--timestamp>
+                     (agent-log--timestamp>
                       (plist-get (cdadr a) :timestamp)
                       (plist-get (cdadr b) :timestamp)))))))
 
-(defun claude-log--build-candidates (sessions)
+(defun agent-log--build-candidates (sessions)
   "Build an alist of (display-string . (session-id . metadata)) from SESSIONS."
-  (let* ((index (claude-log--read-index))
-         (proj-width (claude-log--max-project-width sessions))
+  (let* ((index (agent-log--read-index))
+         (proj-width (agent-log--max-project-width sessions))
          ;; date (16) + 2 gaps (2+2) + project + 2 padding = fixed cols
          (fixed-cols (+ 16 2 proj-width 2))
          ;; Ensure the summary column is wide enough to be useful even
@@ -759,54 +760,54 @@ Projects are sorted by most recent session timestamp."
        (let* ((session-id (car session))
               (meta (cdr session))
               (ts (plist-get meta :timestamp))
-              (date (claude-log--format-epoch-ms ts))
-              (project (claude-log--short-project (plist-get meta :project)))
+              (date (agent-log--format-epoch-ms ts))
+              (project (agent-log--short-project (plist-get meta :project)))
               (index-entry (gethash session-id index))
               (oneline (when index-entry
                          (plist-get index-entry :summary-oneline)))
               (label (if oneline
                          (format fmt date project
-                                 (claude-log--truncate-string
+                                 (agent-log--truncate-string
                                   oneline summary-width))
-                       (let ((display (claude-log--normalize-whitespace
+                       (let ((display (agent-log--normalize-whitespace
                                        (plist-get meta :display))))
                          (format fmt date project
-                                 (concat "\"" (claude-log--truncate-string
+                                 (concat "\"" (agent-log--truncate-string
                                                display (- summary-width 2))
                                          "\""))))))
          (cons label (cons session-id meta))))
      sessions)))
 
-(defun claude-log--max-project-width (sessions)
+(defun agent-log--max-project-width (sessions)
   "Return the maximum display width of project names in SESSIONS."
   (let ((max-w 0))
     (dolist (session sessions max-w)
-      (let* ((project (claude-log--short-project
+      (let* ((project (agent-log--short-project
                        (plist-get (cdr session) :project)))
              (w (string-width project)))
         (when (> w max-w) (setq max-w w))))))
 
-(defun claude-log--short-project (path)
+(defun agent-log--short-project (path)
   "Extract a short project name from PATH."
   (if (or (null path) (string-empty-p path))
       "unknown"
     (file-name-nondirectory (directory-file-name path))))
 
-(defun claude-log--unique-project-names (paths)
+(defun agent-log--unique-project-names (paths)
   "Return an alist of (PATH . DISPLAY-NAME) with unique display names for PATHS.
 Short names are used when unique; parent/name when collisions occur."
   (let ((counts (make-hash-table :test #'equal)))
     (dolist (path paths)
-      (cl-incf (gethash (claude-log--short-project path) counts 0)))
+      (cl-incf (gethash (agent-log--short-project path) counts 0)))
     (mapcar (lambda (path)
-              (let ((short (claude-log--short-project path)))
+              (let ((short (agent-log--short-project path)))
                 (cons path
                       (if (> (gethash short counts) 1)
-                          (claude-log--long-project-name path)
+                          (agent-log--long-project-name path)
                         short))))
             paths)))
 
-(defun claude-log--long-project-name (path)
+(defun agent-log--long-project-name (path)
   "Return a parent/name string from PATH for disambiguation."
   (if (or (null path) (string-empty-p path))
       "unknown"
@@ -820,7 +821,7 @@ Short names are used when unique; parent/name when collisions occur."
           (format "%s/%s" parent name)
         name))))
 
-(defun claude-log--format-epoch-ms (ms)
+(defun agent-log--format-epoch-ms (ms)
   "Format millisecond epoch timestamp MS as a date-time string."
   (if (numberp ms)
       (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time (/ ms 1000.0)))
@@ -828,38 +829,38 @@ Short names are used when unique; parent/name when collisions occur."
 
 ;;;;; JSONL parsing
 
-(defun claude-log--parse-jsonl-file (file)
+(defun agent-log--parse-jsonl-file (file)
   "Parse FILE as JSONL, returning a list of plists.
 Malformed lines are silently skipped."
-  (let ((lines (claude-log--read-file-lines file)))
+  (let ((lines (agent-log--read-file-lines file)))
     (delq nil
           (mapcar (lambda (line)
                     (condition-case nil
-                        (claude-log--parse-json-line line)
+                        (agent-log--parse-json-line line)
                       (error nil)))
                   lines))))
 
-(defun claude-log--read-file-lines (file)
+(defun agent-log--read-file-lines (file)
   "Read FILE and return a list of non-empty lines."
   (with-temp-buffer
     (insert-file-contents file)
     (split-string (buffer-string) "\n" t)))
 
-(defun claude-log--parse-json-line (line)
+(defun agent-log--parse-json-line (line)
   "Parse a single JSON LINE into a plist."
   (json-parse-string line :object-type 'plist :array-type 'list))
 
-(defun claude-log--filter-conversation (entries)
+(defun agent-log--filter-conversation (entries)
   "Filter ENTRIES to user and assistant messages, excluding system entries."
-  (seq-filter #'claude-log--conversation-entry-p entries))
+  (seq-filter #'agent-log--conversation-entry-p entries))
 
-(defun claude-log--conversation-entry-p (entry)
+(defun agent-log--conversation-entry-p (entry)
   "Return non-nil if ENTRY is a genuine conversation message."
   (let ((type (plist-get entry :type)))
     (and (member type '("user" "assistant"))
-         (not (claude-log--system-entry-p entry)))))
+         (not (agent-log--system-entry-p entry)))))
 
-(defconst claude-log--system-tag-regexp
+(defconst agent-log--system-tag-regexp
   (rx bos (0+ space) "<"
       (or "local-command-caveat"
           "local-command-stdout"
@@ -871,60 +872,60 @@ Malformed lines are silently skipped."
       (or ">" " "))
   "Regexp matching system-generated XML tags in user entries.")
 
-(defun claude-log--system-entry-p (entry)
+(defun agent-log--system-entry-p (entry)
   "Return non-nil if ENTRY is a system-generated message.
 These are user-role entries whose string content starts with a
 known system XML tag."
   (let* ((content (plist-get (plist-get entry :message) :content)))
     (and (stringp content)
-         (string-match-p claude-log--system-tag-regexp content))))
+         (string-match-p agent-log--system-tag-regexp content))))
 
 ;;;;; Entry helpers
 
-(defun claude-log--find-first-message (entries)
+(defun agent-log--find-first-message (entries)
   "Return the first user or assistant entry from ENTRIES."
   (seq-find (lambda (e) (member (plist-get e :type) '("user" "assistant")))
             entries))
 
-(defun claude-log--find-progress-entry (entries)
+(defun agent-log--find-progress-entry (entries)
   "Return the first progress entry from ENTRIES."
   (seq-find (lambda (e) (equal (plist-get e :type) "progress"))
             entries))
 
 ;;;;; Rendering
 
-(defun claude-log--render-full ()
+(defun agent-log--render-full ()
   "Render the full JSONL file into the current buffer."
-  (let* ((entries (claude-log--parse-jsonl-file claude-log--source-file))
-         (conversation (claude-log--filter-conversation entries)))
-    (claude-log--extract-session-metadata entries)
+  (let* ((entries (agent-log--parse-jsonl-file agent-log--source-file))
+         (conversation (agent-log--filter-conversation entries)))
+    (agent-log--extract-session-metadata entries)
     (let ((inhibit-read-only t))
       (erase-buffer)
-      (insert (claude-log--render-header))
+      (insert (agent-log--render-header))
       (dolist (entry conversation)
-        (insert (claude-log--render-entry entry)))
-      (claude-log--record-offset)
+        (insert (agent-log--render-entry entry)))
+      (agent-log--record-offset)
       (goto-char (point-min))
-      (claude-log--collapse-as-configured))))
+      (agent-log--collapse-as-configured))))
 
-(defun claude-log--extract-session-metadata (entries)
+(defun agent-log--extract-session-metadata (entries)
   "Extract project and date from ENTRIES."
-  (when-let* ((first-msg (claude-log--find-first-message entries)))
-    (setq claude-log--session-date
-          (claude-log--format-iso-timestamp (plist-get first-msg :timestamp))))
-  (when-let* ((progress (claude-log--find-progress-entry entries))
+  (when-let* ((first-msg (agent-log--find-first-message entries)))
+    (setq agent-log--session-date
+          (agent-log--format-iso-timestamp (plist-get first-msg :timestamp))))
+  (when-let* ((progress (agent-log--find-progress-entry entries))
               (cwd (plist-get progress :cwd))
               ((not (string-empty-p cwd))))
-    (setq claude-log--session-project cwd)))
+    (setq agent-log--session-project cwd)))
 
-(defun claude-log--render-header ()
+(defun agent-log--render-header ()
   "Return the Markdown header for the session."
-  (let ((project (claude-log--short-project
-                  (or claude-log--session-project "")))
-        (date (or claude-log--session-date "unknown")))
+  (let ((project (agent-log--short-project
+                  (or agent-log--session-project "")))
+        (date (or agent-log--session-date "unknown")))
     (format "# Session: %s — %s\n\n" project date)))
 
-(defun claude-log--render-entry (entry)
+(defun agent-log--render-entry (entry)
   "Render a single conversation ENTRY to a Markdown string."
   (let ((message (plist-get entry :message)))
     (if (not message)
@@ -932,22 +933,22 @@ known system XML tag."
       (let* ((timestamp (plist-get entry :timestamp))
              (role (plist-get message :role))
              (content (plist-get message :content))
-             (time-str (claude-log--format-iso-timestamp timestamp)))
+             (time-str (agent-log--format-iso-timestamp timestamp)))
         (cond
          ((equal role "user")
-          (claude-log--render-user-turn content time-str))
+          (agent-log--render-user-turn content time-str))
          ((equal role "assistant")
-          (claude-log--render-assistant-turn content time-str))
+          (agent-log--render-assistant-turn content time-str))
          (t ""))))))
 
-(defun claude-log--render-user-turn (content time-str)
+(defun agent-log--render-user-turn (content time-str)
   "Render a user turn with CONTENT and TIME-STR.
 If CONTENT contains only tool results and no user text, render
 them without a User heading."
   (if (stringp content)
       (format "---\n\n## User — %s\n\n%s\n\n" time-str content)
-    (let ((text-parts (claude-log--collect-user-text content))
-          (tool-parts (claude-log--collect-tool-results content)))
+    (let ((text-parts (agent-log--collect-user-text content))
+          (tool-parts (agent-log--collect-tool-results content)))
       (cond
        (text-parts
         (concat (format "---\n\n## User — %s\n\n" time-str)
@@ -957,7 +958,7 @@ them without a User heading."
         (string-join tool-parts))
        (t "")))))
 
-(defun claude-log--collect-user-text (content)
+(defun agent-log--collect-user-text (content)
   "Collect non-empty text parts from user CONTENT array.
 Returns a list of formatted strings, or nil if there is no text."
   (let (parts)
@@ -968,24 +969,24 @@ Returns a list of formatted strings, or nil if there is no text."
             (push (format "%s\n\n" text) parts)))))
     (nreverse parts)))
 
-(defun claude-log--collect-tool-results (content)
+(defun agent-log--collect-tool-results (content)
   "Collect tool result parts from user CONTENT array.
 Returns a list of formatted strings, or nil if there are none."
   (let (parts)
     (dolist (item content)
       (when (equal (plist-get item :type) "tool_result")
-        (push (claude-log--render-tool-result item) parts)))
+        (push (agent-log--render-tool-result item) parts)))
     (nreverse parts)))
 
-(defun claude-log--render-assistant-turn (content time-str)
+(defun agent-log--render-assistant-turn (content time-str)
   "Render an assistant turn with CONTENT and TIME-STR.
 Returns an empty string if CONTENT produces no visible output."
-  (let ((body (claude-log--render-assistant-body content)))
+  (let ((body (agent-log--render-assistant-body content)))
     (if (string-empty-p body)
         ""
       (concat (format "---\n\n## Assistant — %s\n\n" time-str) body))))
 
-(defun claude-log--render-assistant-body (content)
+(defun agent-log--render-assistant-body (content)
   "Render the body of an assistant turn from CONTENT items."
   (let ((parts '()))
     (when (listp content)
@@ -993,38 +994,38 @@ Returns an empty string if CONTENT produces no visible output."
         (let ((item-type (plist-get item :type)))
           (cond
            ((equal item-type "thinking")
-            (push (claude-log--render-thinking item) parts))
+            (push (agent-log--render-thinking item) parts))
            ((equal item-type "text")
             (let ((text (plist-get item :text)))
               (when (and text (not (string-empty-p (string-trim text))))
                 (push (format "%s\n\n" text) parts))))
            ((equal item-type "tool_use")
-            (push (claude-log--render-tool-use item) parts))))))
+            (push (agent-log--render-tool-use item) parts))))))
     (apply #'concat (nreverse parts))))
 
-(defun claude-log--render-thinking (item)
+(defun agent-log--render-thinking (item)
   "Render a thinking ITEM."
   (let* ((text (or (plist-get item :thinking) ""))
-         (truncated (claude-log--truncate-string text claude-log-max-tool-result-length))
+         (truncated (agent-log--truncate-string text agent-log-max-tool-result-length))
          (clean (replace-regexp-in-string "\n\n+" "\n" truncated)))
     (format "#### Thinking\n\n%s\n\n" clean)))
 
-(defun claude-log--render-tool-use (item)
+(defun agent-log--render-tool-use (item)
   "Render a tool_use ITEM with a smart summary of its input."
   (let* ((name (plist-get item :name))
          (input (plist-get item :input))
-         (summary (claude-log--summarize-tool-input name input)))
+         (summary (agent-log--summarize-tool-input name input)))
     (format "#### Tool: %s\n\n%s\n\n" name summary)))
 
-(defun claude-log--render-tool-result (item)
+(defun agent-log--render-tool-result (item)
   "Render a tool_result ITEM."
   (let* ((content (plist-get item :content))
-         (text (claude-log--extract-tool-result-text content))
-         (truncated (claude-log--truncate-string text claude-log-max-tool-result-length)))
+         (text (agent-log--extract-tool-result-text content))
+         (truncated (agent-log--truncate-string text agent-log-max-tool-result-length)))
     (format "#### Tool result\n\n> %s\n\n"
             (string-replace "\n" "\n> " truncated))))
 
-(defun claude-log--extract-tool-result-text (content)
+(defun agent-log--extract-tool-result-text (content)
   "Extract text from tool result CONTENT, which may be a string or list."
   (cond
    ((stringp content) content)
@@ -1040,42 +1041,42 @@ Returns an empty string if CONTENT produces no visible output."
 
 ;;;;; Tool input summaries
 
-(defun claude-log--summarize-tool-input (name input)
+(defun agent-log--summarize-tool-input (name input)
   "Return a concise summary of INPUT for tool NAME."
-  (let ((summary (claude-log--summarize-tool-input-by-name name input)))
+  (let ((summary (agent-log--summarize-tool-input-by-name name input)))
     (if (string-empty-p summary)
-        (claude-log--summarize-tool-input-generic input)
+        (agent-log--summarize-tool-input-generic input)
       summary)))
 
-(defun claude-log--summarize-tool-input-by-name (name input)
+(defun agent-log--summarize-tool-input-by-name (name input)
   "Return a summary of tool INPUT specific to tool NAME."
   (pcase name
     ((or "Read" "Write")
      (format "> **file_path**: %s" (or (plist-get input :file_path) "?")))
-    ("Edit" (claude-log--summarize-edit input))
-    ("Bash" (claude-log--summarize-bash input))
-    ("Grep" (claude-log--summarize-grep input))
-    ("Glob" (claude-log--summarize-glob input))
-    ("WebFetch" (claude-log--summarize-web-fetch input))
-    ("WebSearch" (claude-log--summarize-web-search input))
-    ("Task" (claude-log--summarize-task input))
+    ("Edit" (agent-log--summarize-edit input))
+    ("Bash" (agent-log--summarize-bash input))
+    ("Grep" (agent-log--summarize-grep input))
+    ("Glob" (agent-log--summarize-glob input))
+    ("WebFetch" (agent-log--summarize-web-fetch input))
+    ("WebSearch" (agent-log--summarize-web-search input))
+    ("Task" (agent-log--summarize-task input))
     (_ "")))
 
-(defun claude-log--summarize-edit (input)
+(defun agent-log--summarize-edit (input)
   "Summarize Edit tool INPUT."
   (let ((file (or (plist-get input :file_path) "?"))
-        (old (claude-log--truncate-string
+        (old (agent-log--truncate-string
               (or (plist-get input :old_string) "")
-              claude-log-max-tool-input-length)))
+              agent-log-max-tool-input-length)))
     (format "> **file_path**: %s\n> **old_string**: `%s`" file old)))
 
-(defun claude-log--summarize-bash (input)
+(defun agent-log--summarize-bash (input)
   "Summarize Bash tool INPUT."
-  (let ((cmd (claude-log--truncate-string
-              (or (plist-get input :command) "") claude-log-max-tool-input-length)))
+  (let ((cmd (agent-log--truncate-string
+              (or (plist-get input :command) "") agent-log-max-tool-input-length)))
     (format "> ```\n> %s\n> ```" cmd)))
 
-(defun claude-log--summarize-grep (input)
+(defun agent-log--summarize-grep (input)
   "Summarize Grep tool INPUT."
   (let ((pattern (or (plist-get input :pattern) "?"))
         (path (or (plist-get input :path) "")))
@@ -1083,19 +1084,19 @@ Returns an empty string if CONTENT produces no visible output."
         (format "> **pattern**: `%s`" pattern)
       (format "> **pattern**: `%s` in %s" pattern path))))
 
-(defun claude-log--summarize-glob (input)
+(defun agent-log--summarize-glob (input)
   "Summarize Glob tool INPUT."
   (format "> **pattern**: `%s`" (or (plist-get input :pattern) "?")))
 
-(defun claude-log--summarize-web-fetch (input)
+(defun agent-log--summarize-web-fetch (input)
   "Summarize WebFetch tool INPUT."
   (format "> **url**: %s" (or (plist-get input :url) "?")))
 
-(defun claude-log--summarize-web-search (input)
+(defun agent-log--summarize-web-search (input)
   "Summarize WebSearch tool INPUT."
   (format "> **query**: %s" (or (plist-get input :query) "?")))
 
-(defun claude-log--summarize-task (input)
+(defun agent-log--summarize-task (input)
   "Summarize Task tool INPUT."
   (let ((desc (or (plist-get input :description) ""))
         (type (or (plist-get input :subagent_type) "")))
@@ -1103,7 +1104,7 @@ Returns an empty string if CONTENT produces no visible output."
         (format "> %s" desc)
       (format "> **%s**: %s" type desc))))
 
-(defun claude-log--summarize-tool-input-generic (input)
+(defun agent-log--summarize-tool-input-generic (input)
   "Return a generic summary of tool INPUT plist.
 Returns an empty string if INPUT is not a proper plist."
   (if (not (and (listp input) (cl-evenp (length input))))
@@ -1112,36 +1113,36 @@ Returns an empty string if INPUT is not a proper plist."
       (cl-loop for (key val) on input by #'cddr
                when (keywordp key)
                do (let* ((k (substring (symbol-name key) 1))
-                         (v (claude-log--truncate-string
+                         (v (agent-log--truncate-string
                              (format "%s" val)
-                             claude-log-max-tool-input-length)))
+                             agent-log-max-tool-input-length)))
                     (push (format "> **%s**: %s" k v) parts)))
       (string-join (nreverse parts) "\n"))))
 
 ;;;;; Timestamps
 
-(defun claude-log--format-iso-timestamp (ts)
-  "Format ISO 8601 timestamp TS according to `claude-log-timestamp-format'."
+(defun agent-log--format-iso-timestamp (ts)
+  "Format ISO 8601 timestamp TS according to `agent-log-timestamp-format'."
   (if (and (stringp ts) (not (string-empty-p ts)))
-      (claude-log--parse-and-format-iso ts)
+      (agent-log--parse-and-format-iso ts)
     "unknown"))
 
-(defun claude-log--parse-and-format-iso (ts)
+(defun agent-log--parse-and-format-iso (ts)
   "Parse ISO 8601 string TS and format it."
   (condition-case nil
       (let ((time (date-to-time ts)))
-        (format-time-string claude-log-timestamp-format time))
+        (format-time-string agent-log-timestamp-format time))
     (error ts)))
 
 ;;;;; Utilities
 
-(defun claude-log--timestamp> (a b)
+(defun agent-log--timestamp> (a b)
   "Return non-nil if timestamp A is more recent than B.
 Handles non-numeric values by treating them as 0."
   (> (if (numberp a) a 0)
      (if (numberp b) b 0)))
 
-(defun claude-log--preserve-order-table (collection)
+(defun agent-log--preserve-order-table (collection)
   "Wrap COLLECTION in a completion table that preserves display order.
 COLLECTION is a list of strings or an alist of (string . value)."
   (lambda (string pred action)
@@ -1150,11 +1151,11 @@ COLLECTION is a list of strings or an alist of (string . value)."
                    (cycle-sort-function . identity))
       (complete-with-action action collection string pred))))
 
-(defun claude-log--normalize-whitespace (str)
+(defun agent-log--normalize-whitespace (str)
   "Collapse all whitespace in STR into single spaces and trim."
   (string-trim (replace-regexp-in-string "[\n\r\t ]+" " " (or str ""))))
 
-(defun claude-log--truncate-string (str max)
+(defun agent-log--truncate-string (str max)
   "Truncate STR to MAX characters, appending ellipsis if needed."
   (if (<= (length str) max)
       str
@@ -1162,89 +1163,89 @@ COLLECTION is a list of strings or an alist of (string . value)."
 
 ;;;;; Major mode
 
-(defvar claude-log-mode-map
+(defvar agent-log-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map "n" #'claude-log-next-turn)
-    (define-key map "p" #'claude-log-previous-turn)
-    (define-key map (kbd "TAB") #'claude-log-toggle-section)
-    (define-key map "C" #'claude-log-collapse-all-tools)
-    (define-key map "E" #'claude-log-expand-all)
-    (define-key map "g" #'claude-log-refresh)
-    (define-key map "w" #'claude-log-copy-turn)
-    (define-key map "r" #'claude-log-resume-session)
-    (define-key map "?" #'claude-log-menu)
+    (define-key map "n" #'agent-log-next-turn)
+    (define-key map "p" #'agent-log-previous-turn)
+    (define-key map (kbd "TAB") #'agent-log-toggle-section)
+    (define-key map "C" #'agent-log-collapse-all-tools)
+    (define-key map "E" #'agent-log-expand-all)
+    (define-key map "g" #'agent-log-refresh)
+    (define-key map "w" #'agent-log-copy-turn)
+    (define-key map "r" #'agent-log-resume-session)
+    (define-key map "?" #'agent-log-menu)
     (define-key map "q" #'quit-window)
     map)
-  "Keymap for `claude-log-mode'.")
+  "Keymap for `agent-log-mode'.")
 
-(define-derived-mode claude-log-mode markdown-view-mode "Claude-Log"
-  "Major mode for viewing Claude Code conversation logs.
-\\{claude-log-mode-map}"
+(define-derived-mode agent-log-mode markdown-view-mode "Agent-Log"
+  "Major mode for viewing AI coding agent session logs.
+\\{agent-log-mode-map}"
   (setq-local outline-regexp "##+ ")
-  (setq-local outline-level #'claude-log--outline-level)
+  (setq-local outline-level #'agent-log--outline-level)
   (outline-minor-mode 1)
   ;; Collapsed sections show an ellipsis (the `t' in the cons cell) so
   ;; the user knows there is hidden content they can expand.  Hidden
   ;; sections vanish entirely with no visual indicator.
-  (add-to-invisibility-spec '(claude-log-collapsed . t))
-  (add-to-invisibility-spec 'claude-log-hidden)
-  (add-hook 'kill-buffer-hook #'claude-log--cleanup nil t))
+  (add-to-invisibility-spec '(agent-log-collapsed . t))
+  (add-to-invisibility-spec 'agent-log-hidden)
+  (add-hook 'kill-buffer-hook #'agent-log--cleanup nil t))
 
-(defun claude-log--outline-level ()
+(defun agent-log--outline-level ()
   "Return the outline level based on the number of `#' characters."
   (- (match-end 0) (match-beginning 0) 1))
 
-(defun claude-log--cleanup ()
+(defun agent-log--cleanup ()
   "Clean up file watcher and update index when buffer is killed."
-  (when claude-log--watcher
-    (file-notify-rm-watch claude-log--watcher)
-    (setq claude-log--watcher nil))
-  (when (and claude-log--session-id claude-log--rendered-file claude-log--source-file)
+  (when agent-log--watcher
+    (file-notify-rm-watch agent-log--watcher)
+    (setq agent-log--watcher nil))
+  (when (and agent-log--session-id agent-log--rendered-file agent-log--source-file)
     (let ((final-size (file-attribute-size
-                       (file-attributes claude-log--source-file))))
+                       (file-attributes agent-log--source-file))))
       (when final-size
-        (claude-log--index-update claude-log--session-id
-                                  claude-log--rendered-file
+        (agent-log--index-update agent-log--session-id
+                                  agent-log--rendered-file
                                   final-size)))))
 
 ;;;;; Live updates
 
-(defun claude-log--record-offset ()
+(defun agent-log--record-offset ()
   "Record the current byte size of the source file."
-  (when claude-log--source-file
-    (setq claude-log--file-offset
-          (file-attribute-size (file-attributes claude-log--source-file)))))
+  (when agent-log--source-file
+    (setq agent-log--file-offset
+          (file-attribute-size (file-attributes agent-log--source-file)))))
 
-(defun claude-log--start-watcher ()
+(defun agent-log--start-watcher ()
   "Start watching the JSONL file for change events."
-  (setq claude-log--watcher
+  (setq agent-log--watcher
         (file-notify-add-watch
-         claude-log--source-file '(change)
+         agent-log--source-file '(change)
          (let ((buf (current-buffer)))
            (lambda (_event)
              (when (buffer-live-p buf)
                (with-current-buffer buf
-                 (claude-log--handle-file-change))))))))
+                 (agent-log--handle-file-change))))))))
 
-(defun claude-log--handle-file-change ()
+(defun agent-log--handle-file-change ()
   "Handle a change notification on the JSONL file."
-  (when (and claude-log--source-file
-             (file-exists-p claude-log--source-file))
+  (when (and agent-log--source-file
+             (file-exists-p agent-log--source-file))
     (let* ((new-size (file-attribute-size
-                      (file-attributes claude-log--source-file)))
+                      (file-attributes agent-log--source-file)))
            (at-end (>= (point) (point-max))))
-      (when (and new-size (> new-size claude-log--file-offset))
+      (when (and new-size (> new-size agent-log--file-offset))
         (condition-case err
-            (let ((new-text (claude-log--read-bytes-from
-                             claude-log--source-file
-                             claude-log--file-offset new-size)))
-              (setq claude-log--file-offset new-size)
-              (claude-log--process-incremental-text new-text at-end))
+            (let ((new-text (agent-log--read-bytes-from
+                             agent-log--source-file
+                             agent-log--file-offset new-size)))
+              (setq agent-log--file-offset new-size)
+              (agent-log--process-incremental-text new-text at-end))
           (error
-           (message "claude-log: error reading incremental update: %s"
+           (message "agent-log: error reading incremental update: %s"
                     (error-message-string err))))))))
 
-(defun claude-log--incomplete-utf8-tail-length (unibyte-str)
+(defun agent-log--incomplete-utf8-tail-length (unibyte-str)
   "Return the number of trailing bytes that form an incomplete UTF-8 sequence.
 UNIBYTE-STR is a unibyte string.  Returns 0 if the string ends on
 a complete character boundary."
@@ -1273,12 +1274,12 @@ a complete character boundary."
               available
             0))))))
 
-(defun claude-log--read-bytes-from (file start end)
+(defun agent-log--read-bytes-from (file start end)
   "Read bytes from FILE between START and END offsets.
 Handles incomplete UTF-8 sequences at chunk boundaries by saving
-trailing partial bytes in `claude-log--partial-bytes' and
+trailing partial bytes in `agent-log--partial-bytes' and
 prepending any previously saved bytes."
-  (let ((saved-partial claude-log--partial-bytes)
+  (let ((saved-partial agent-log--partial-bytes)
         result new-partial)
     (with-temp-buffer
       (set-buffer-multibyte nil)
@@ -1286,7 +1287,7 @@ prepending any previously saved bytes."
         (insert saved-partial))
       (let ((coding-system-for-read 'raw-text))
         (insert-file-contents file nil start end))
-      (let ((tail (claude-log--incomplete-utf8-tail-length
+      (let ((tail (agent-log--incomplete-utf8-tail-length
                    (buffer-substring-no-properties (point-min) (point-max)))))
         (if (> tail 0)
             (progn
@@ -1295,64 +1296,64 @@ prepending any previously saved bytes."
               (delete-region (- (point-max) tail) (point-max)))
           (setq new-partial nil))
         (setq result (decode-coding-region (point-min) (point-max) 'utf-8 t))))
-    (setq claude-log--partial-bytes new-partial)
+    (setq agent-log--partial-bytes new-partial)
     result))
 
-(defun claude-log--process-incremental-text (text at-end)
+(defun agent-log--process-incremental-text (text at-end)
   "Parse new TEXT from the JSONL file and append rendered entries.
 If AT-END is non-nil, scroll to show new content."
-  (let* ((combined (concat claude-log--partial-line text))
+  (let* ((combined (concat agent-log--partial-line text))
          (lines (split-string combined "\n")))
-    (setq claude-log--partial-line (car (last lines)))
+    (setq agent-log--partial-line (car (last lines)))
     (let ((complete-lines (butlast lines)))
       (dolist (line complete-lines)
         (unless (string-empty-p line)
-          (claude-log--append-rendered-line line))))
+          (agent-log--append-rendered-line line))))
     (when at-end
       (goto-char (point-max)))))
 
-(defun claude-log--append-rendered-line (line)
+(defun agent-log--append-rendered-line (line)
   "Parse LINE as JSON and append its rendering if it is a conversation entry.
 Appends to both the buffer and the rendered .md file on disk."
-  (when-let* ((entry (claude-log--try-parse-json line)))
-    (when (claude-log--conversation-entry-p entry)
-      (let ((rendered (claude-log--render-entry entry))
+  (when-let* ((entry (agent-log--try-parse-json line)))
+    (when (agent-log--conversation-entry-p entry)
+      (let ((rendered (agent-log--render-entry entry))
             (inhibit-read-only t))
-        (when claude-log--rendered-file
-          (claude-log--append-to-file claude-log--rendered-file rendered))
+        (when agent-log--rendered-file
+          (agent-log--append-to-file agent-log--rendered-file rendered))
         ;; Sync modtime BEFORE buffer insert to prevent the
         ;; supersession check in `prepare_to_modify_buffer'.
         (set-visited-file-modtime)
         (save-excursion
           (goto-char (point-max))
           (insert rendered)
-          (claude-log--collapse-region
+          (agent-log--collapse-region
            (- (point-max) (length rendered)) (point-max)))
         (set-buffer-modified-p nil)))))
 
-(defun claude-log--try-parse-json (line)
+(defun agent-log--try-parse-json (line)
   "Parse LINE as JSON, returning nil if it is not valid JSON."
-  (ignore-errors (claude-log--parse-json-line line)))
+  (ignore-errors (agent-log--parse-json-line line)))
 
 ;;;;; Navigation commands
 
-(defun claude-log-next-turn ()
+(defun agent-log-next-turn ()
   "Move point to the next User or Assistant heading."
   (interactive)
-  (let ((pos (claude-log--find-turn-heading t)))
+  (let ((pos (agent-log--find-turn-heading t)))
     (if pos
         (goto-char pos)
       (message "No more turns"))))
 
-(defun claude-log-previous-turn ()
+(defun agent-log-previous-turn ()
   "Move point to the previous User or Assistant heading."
   (interactive)
-  (let ((pos (claude-log--find-turn-heading nil)))
+  (let ((pos (agent-log--find-turn-heading nil)))
     (if pos
         (goto-char pos)
       (message "No previous turns"))))
 
-(defun claude-log--find-turn-heading (forward)
+(defun agent-log--find-turn-heading (forward)
   "Find the next (if FORWARD) or previous turn heading.
 Returns the position, or nil."
   (save-excursion
@@ -1364,7 +1365,7 @@ Returns the position, or nil."
         (when (re-search-backward re nil t)
           (match-beginning 0))))))
 
-(defun claude-log-toggle-section ()
+(defun agent-log-toggle-section ()
   "Toggle the visibility of the section at point."
   (interactive)
   (save-excursion
@@ -1372,51 +1373,51 @@ Returns the position, or nil."
     (cond
      ((looking-at "^####+ ")
       (let* ((heading-end (save-excursion (end-of-line) (point)))
-             (ov (cl-find-if (lambda (o) (overlay-get o 'claude-log-section))
+             (ov (cl-find-if (lambda (o) (overlay-get o 'agent-log-section))
                              (overlays-at heading-end))))
         (if ov
             (delete-overlay ov)
-          (let ((section-end (claude-log--find-section-end)))
+          (let ((section-end (agent-log--find-section-end)))
             (when (< heading-end section-end)
               (let ((new-ov (make-overlay heading-end section-end nil t)))
-                (overlay-put new-ov 'invisible 'claude-log-collapsed)
-                (overlay-put new-ov 'claude-log-section t)))))))
+                (overlay-put new-ov 'invisible 'agent-log-collapsed)
+                (overlay-put new-ov 'agent-log-section t)))))))
      (t
       (when (bound-and-true-p outline-minor-mode)
         (outline-toggle-children))))))
 
-(defun claude-log-collapse-all-tools ()
+(defun agent-log-collapse-all-tools ()
   "Collapse all tool-use, tool-result, and thinking sections."
   (interactive)
-  (claude-log--remove-section-overlays)
-  (claude-log--apply-section-visibility "^####+ " 'collapse))
+  (agent-log--remove-section-overlays)
+  (agent-log--apply-section-visibility "^####+ " 'collapse))
 
-(defun claude-log-expand-all ()
+(defun agent-log-expand-all ()
   "Expand all sections."
   (interactive)
   (let ((inhibit-read-only t))
     (if (fboundp 'outline-show-all)
         (outline-show-all)
       (outline-flag-region (point-min) (point-max) nil))
-    (claude-log--remove-section-overlays)))
+    (agent-log--remove-section-overlays)))
 
-(defun claude-log--apply-configured-visibility (&optional start end)
+(defun agent-log--apply-configured-visibility (&optional start end)
   "Apply thinking and tool visibility per user configuration.
 When START and END are given, restrict to that region."
-  (pcase claude-log-show-thinking
-    ('collapsed (claude-log--apply-section-visibility "^#### Thinking$" 'collapse start end))
-    ('hidden (claude-log--apply-section-visibility "^#### Thinking$" 'hide start end)))
-  (pcase claude-log-show-tools
-    ('collapsed (claude-log--apply-section-visibility "^#### Tool" 'collapse start end))
-    ('hidden (claude-log--apply-section-visibility "^#### Tool" 'hide start end))))
+  (pcase agent-log-show-thinking
+    ('collapsed (agent-log--apply-section-visibility "^#### Thinking$" 'collapse start end))
+    ('hidden (agent-log--apply-section-visibility "^#### Thinking$" 'hide start end)))
+  (pcase agent-log-show-tools
+    ('collapsed (agent-log--apply-section-visibility "^#### Tool" 'collapse start end))
+    ('hidden (agent-log--apply-section-visibility "^#### Tool" 'hide start end))))
 
-(defun claude-log--collapse-as-configured ()
+(defun agent-log--collapse-as-configured ()
   "Collapse or hide sections per user configuration."
-  (claude-log--remove-section-overlays)
-  (claude-log--apply-configured-visibility)
-  (claude-log--hide-empty-turns))
+  (agent-log--remove-section-overlays)
+  (agent-log--apply-configured-visibility)
+  (agent-log--hide-empty-turns))
 
-(defun claude-log--find-section-end ()
+(defun agent-log--find-section-end ()
   "Find the end of the #### section at point.
 Point must be at the beginning of a #### heading line.
 The section extends until the next heading (any level) or the
@@ -1431,7 +1432,7 @@ blank lines before that boundary are included."
       (goto-char limit)
       limit)))
 
-(defun claude-log--apply-section-visibility (regexp action &optional start end)
+(defun agent-log--apply-section-visibility (regexp action &optional start end)
   "Apply visibility ACTION to sections matching REGEXP.
 ACTION is `collapse' (hide body, keep heading) or `hide' (hide
 heading and body).  When START and END are given, restrict the
@@ -1445,28 +1446,28 @@ search to that region."
                             (end-of-line) (point)))
              (section-end (save-excursion
                             (goto-char heading-start)
-                            (claude-log--find-section-end)))
+                            (agent-log--find-section-end)))
              (ov-start (if (eq action 'collapse) heading-end heading-start))
              (inv-spec (if (eq action 'collapse)
-                           'claude-log-collapsed
-                         'claude-log-hidden)))
+                           'agent-log-collapsed
+                         'agent-log-hidden)))
         (when (< ov-start section-end)
           (let ((ov (make-overlay ov-start section-end nil t)))
             (overlay-put ov 'invisible inv-spec)
-            (overlay-put ov 'claude-log-section t)))
+            (overlay-put ov 'agent-log-section t)))
         (goto-char section-end)))))
 
-(defun claude-log--collapse-region (start end)
+(defun agent-log--collapse-region (start end)
   "Collapse or hide new sections between START and END."
-  (claude-log--apply-configured-visibility start end))
+  (agent-log--apply-configured-visibility start end))
 
-(defun claude-log--remove-section-overlays ()
+(defun agent-log--remove-section-overlays ()
   "Remove all section visibility overlays from the current buffer."
   (dolist (ov (overlays-in (point-min) (point-max)))
-    (when (overlay-get ov 'claude-log-section)
+    (when (overlay-get ov 'agent-log-section)
       (delete-overlay ov))))
 
-(defun claude-log--hide-empty-turns ()
+(defun agent-log--hide-empty-turns ()
   "Hide turn headings whose visible content is entirely invisible.
 After tool/thinking sections are hidden, some assistant turns may
 contain no visible content.  This hides those headings and their
@@ -1490,12 +1491,12 @@ preceding separator."
                          (if (re-search-forward "^---$" nil t)
                              (match-beginning 0)
                            (point-max)))))
-        (when (claude-log--region-all-invisible-p content-start turn-end)
+        (when (agent-log--region-all-invisible-p content-start turn-end)
           (let ((ov (make-overlay turn-start turn-end nil t)))
-            (overlay-put ov 'invisible 'claude-log-hidden)
-            (overlay-put ov 'claude-log-section t)))))))
+            (overlay-put ov 'invisible 'agent-log-hidden)
+            (overlay-put ov 'agent-log-section t)))))))
 
-(defun claude-log--region-all-invisible-p (start end)
+(defun agent-log--region-all-invisible-p (start end)
   "Return non-nil if all non-whitespace in START..END is invisible."
   (save-excursion
     (goto-char start)
@@ -1510,39 +1511,39 @@ preceding separator."
               (throw 'visible nil)))))
       t)))
 
-(defun claude-log-refresh ()
+(defun agent-log-refresh ()
   "Re-render from JSONL source and reload buffer."
   (interactive)
-  (when claude-log--source-file
-    (setq claude-log--partial-line ""
-          claude-log--partial-bytes nil)
-    (if (and claude-log--session-id claude-log--rendered-file)
-        (let ((metadata (list :file claude-log--source-file
+  (when agent-log--source-file
+    (setq agent-log--partial-line ""
+          agent-log--partial-bytes nil)
+    (if (and agent-log--session-id agent-log--rendered-file)
+        (let ((metadata (list :file agent-log--source-file
                               :timestamp nil
-                              :project (or claude-log--session-project "")
+                              :project (or agent-log--session-project "")
                               :display "")))
-          (claude-log--render-to-file
-           claude-log--session-id metadata claude-log--rendered-file)
+          (agent-log--render-to-file
+           agent-log--session-id metadata agent-log--rendered-file)
           (let ((inhibit-read-only t))
             (erase-buffer)
-            (insert-file-contents claude-log--rendered-file)
+            (insert-file-contents agent-log--rendered-file)
             (set-buffer-modified-p nil)
             (goto-char (point-min))
-            (claude-log--collapse-as-configured)
-            (claude-log--maybe-insert-summary claude-log--session-id)
-            (claude-log--record-offset)))
-      (claude-log--render-full))))
+            (agent-log--collapse-as-configured)
+            (agent-log--maybe-insert-summary agent-log--session-id)
+            (agent-log--record-offset)))
+      (agent-log--render-full))))
 
-(defun claude-log-copy-turn ()
+(defun agent-log-copy-turn ()
   "Copy the current turn (from ## heading to next ##) to the kill ring."
   (interactive)
-  (let ((start (claude-log--turn-start))
-        (end (claude-log--turn-end)))
+  (let ((start (agent-log--turn-start))
+        (end (agent-log--turn-end)))
     (when (and start end)
       (kill-ring-save start end)
       (message "Turn copied"))))
 
-(defun claude-log--turn-start ()
+(defun agent-log--turn-start ()
   "Return the start position of the current turn heading."
   (save-excursion
     (beginning-of-line)
@@ -1551,10 +1552,10 @@ preceding separator."
       (when (re-search-backward "^## " nil t)
         (point)))))
 
-(defun claude-log--turn-end ()
+(defun agent-log--turn-end ()
   "Return the end position of the current turn."
   (save-excursion
-    (when-let* ((start (claude-log--turn-start)))
+    (when-let* ((start (agent-log--turn-start)))
       (goto-char start)
       (forward-line 1)
       (if (re-search-forward "^## " nil t)
@@ -1563,12 +1564,12 @@ preceding separator."
 
 ;;;;; Session summaries
 
-(defconst claude-log--no-conversation-sentinel "(no conversation)"
+(defconst agent-log--no-conversation-sentinel "(no conversation)"
   "Sentinel stored as :summary-oneline for sessions with no user/assistant text.
 Used to distinguish \"already processed, nothing to summarize\" from
 \"not yet summarized\" (nil).")
 
-(defconst claude-log--summary-system-message
+(defconst agent-log--summary-system-message
   "You are a concise summarizer. Given a conversation between a user and an AI \
 coding assistant, produce a JSON object with exactly two fields:
 - \"oneline\": A single-line summary (max 80 characters) capturing the main task \
@@ -1579,28 +1580,28 @@ Respond with ONLY the JSON object, no markdown formatting, no code fences, \
 no other text."
   "System message for summary generation.")
 
-(defun claude-log--find-backend-for-model (model)
+(defun agent-log--find-backend-for-model (model)
   "Return the gptel backend that provides MODEL, or nil."
   (cl-loop for (_name . backend) in gptel--known-backends
            when (member model (gptel-backend-models backend))
            return backend))
 
-(defun claude-log--resolve-summary-backend-and-model ()
+(defun agent-log--resolve-summary-backend-and-model ()
   "Return (backend . model) for summary generation.
-Resolves `claude-log-summary-backend' and `claude-log-summary-model',
+Resolves `agent-log-summary-backend' and `agent-log-summary-model',
 inferring the backend from the model when needed."
-  (let* ((model (or claude-log-summary-model gptel-model))
+  (let* ((model (or agent-log-summary-model gptel-model))
          (backend (cond
-                   (claude-log-summary-backend
-                    (gptel-get-backend claude-log-summary-backend))
-                   (claude-log-summary-model
-                    (or (claude-log--find-backend-for-model
-                         claude-log-summary-model)
+                   (agent-log-summary-backend
+                    (gptel-get-backend agent-log-summary-backend))
+                   (agent-log-summary-model
+                    (or (agent-log--find-backend-for-model
+                         agent-log-summary-model)
                         gptel-backend))
                    (t gptel-backend))))
     (cons backend model)))
 
-(defun claude-log--extract-message-text (content)
+(defun agent-log--extract-message-text (content)
   "Extract plain text from message CONTENT.
 Tool-use and thinking blocks are ignored."
   (cond
@@ -1615,19 +1616,19 @@ Tool-use and thinking blocks are ignored."
       (string-join (nreverse texts) "\n")))
    (t "")))
 
-(defun claude-log--extract-conversation-text (entries)
+(defun agent-log--extract-conversation-text (entries)
   "Extract a condensed text representation of ENTRIES for summarization.
 Returns a string with user and assistant messages, truncated to
-`claude-log-summary-max-content-length'."
+`agent-log-summary-max-content-length'."
   (let ((parts '())
         (total 0)
-        (max-len claude-log-summary-max-content-length))
-    (dolist (entry (claude-log--filter-conversation entries))
+        (max-len agent-log-summary-max-content-length))
+    (dolist (entry (agent-log--filter-conversation entries))
       (when (< total max-len)
         (let* ((message (plist-get entry :message))
                (role (plist-get message :role))
                (content (plist-get message :content))
-               (text (claude-log--extract-message-text content))
+               (text (agent-log--extract-message-text content))
                (prefix (if (equal role "user") "User: " "Assistant: "))
                (line (concat prefix text "\n\n")))
           (when (and text (not (string-empty-p (string-trim text))))
@@ -1638,11 +1639,11 @@ Returns a string with user and assistant messages, truncated to
           (substring result 0 max-len)
         result))))
 
-(defun claude-log--build-summary-prompt (conversation-text)
+(defun agent-log--build-summary-prompt (conversation-text)
   "Build a prompt for summarizing CONVERSATION-TEXT."
   (format "Summarize this conversation:\n\n---\n%s\n---" conversation-text))
 
-(defun claude-log--parse-summary-response (response)
+(defun agent-log--parse-summary-response (response)
   "Parse RESPONSE as a JSON summary object.
 Returns (SUMMARY . ONELINE) or nil."
   (condition-case nil
@@ -1663,7 +1664,7 @@ Returns (SUMMARY . ONELINE) or nil."
 
 (defvar-local claude-code-extras--status-data nil)
 
-(defun claude-log--active-session-ids ()
+(defun agent-log--active-session-ids ()
   "Return a list of session IDs for live Claude Code sessions.
 Requires `claude-code' and `claude-code-extras' for session ID
 extraction.  Returns nil if either is unavailable."
@@ -1680,10 +1681,10 @@ extraction.  Returns nil if either is unavailable."
             (push sid ids))))
       (delete-dups ids))))
 
-(defun claude-log--sessions-needing-summary (sessions index)
+(defun agent-log--sessions-needing-summary (sessions index)
   "Return sessions from SESSIONS that lack a summary in INDEX.
 Sessions with a live Claude Code process are excluded by session ID."
-  (let ((active-ids (claude-log--active-session-ids)))
+  (let ((active-ids (agent-log--active-session-ids)))
     (seq-filter
      (lambda (session)
        (let* ((sid (car session))
@@ -1693,58 +1694,58 @@ Sessions with a live Claude Code process are excluded by session ID."
      sessions)))
 
 ;;;###autoload
-(defun claude-log-summarize-sessions ()
+(defun agent-log-summarize-sessions ()
   "Generate AI summaries for all sessions that lack one.
 If summary generation is already in progress, stop it instead."
   (interactive)
   (unless (require 'gptel nil t)
     (user-error "Package `gptel' is required for summary generation"))
   (cond
-   (claude-log--summarize-active
-    (claude-log-stop-summarizing))
+   (agent-log--summarize-active
+    (agent-log-stop-summarizing))
    (t
-    (let* ((sessions (claude-log--read-sessions))
-           (index (claude-log--read-index))
-           (pending (claude-log--sessions-needing-summary sessions index)))
+    (let* ((sessions (agent-log--read-sessions))
+           (index (agent-log--read-index))
+           (pending (agent-log--sessions-needing-summary sessions index)))
       (if (null pending)
           (message "All %d sessions already have summaries" (length sessions))
-        (setq claude-log--summarize-active t
-              claude-log--summarize-stop nil)
-        (cl-incf claude-log--summarize-generation)
+        (setq agent-log--summarize-active t
+              agent-log--summarize-stop nil)
+        (cl-incf agent-log--summarize-generation)
         (message "Generating summaries for %d session(s)... (run again to stop)"
                  (length pending))
-        (claude-log--summarize-next
+        (agent-log--summarize-next
          pending 0 (length pending)
-         claude-log--summarize-generation))))))
+         agent-log--summarize-generation))))))
 
 ;;;###autoload
-(defun claude-log-stop-summarizing ()
+(defun agent-log-stop-summarizing ()
   "Stop summary generation immediately.
 Any in-flight gptel request will still complete, but its callback
 will not spawn further work."
   (interactive)
-  (if claude-log--summarize-active
+  (if agent-log--summarize-active
       (progn
         ;; Bump the generation so that any pending callback or timer
         ;; from the current run becomes stale and is silently ignored.
-        (cl-incf claude-log--summarize-generation)
-        (setq claude-log--summarize-active nil
-              claude-log--summarize-stop nil)
+        (cl-incf agent-log--summarize-generation)
+        (setq agent-log--summarize-active nil
+              agent-log--summarize-stop nil)
         (message "Summary generation stopped"))
     (message "No summary generation in progress")))
 
-(defun claude-log--summarize-next (remaining done total gen)
+(defun agent-log--summarize-next (remaining done total gen)
   "Generate summary for the next session in REMAINING.
 DONE sessions processed so far out of TOTAL.  GEN is the
 generation counter; if it no longer matches
-`claude-log--summarize-generation', this call is stale and does
+`agent-log--summarize-generation', this call is stale and does
 nothing."
-  (when (and claude-log--summarize-active
-             (= gen claude-log--summarize-generation))
-    (if (or (null remaining) claude-log--summarize-stop)
-        (let ((stopped claude-log--summarize-stop))
-          (setq claude-log--summarize-active nil
-                claude-log--summarize-stop nil)
+  (when (and agent-log--summarize-active
+             (= gen agent-log--summarize-generation))
+    (if (or (null remaining) agent-log--summarize-stop)
+        (let ((stopped agent-log--summarize-stop))
+          (setq agent-log--summarize-active nil
+                agent-log--summarize-stop nil)
           (message "Summary generation %s: %d/%d session(s) done"
                    (if stopped "stopped" "complete") done total))
       (let* ((session (car remaining))
@@ -1752,16 +1753,16 @@ nothing."
              (meta (cdr session))
              (jsonl-file (plist-get meta :file)))
         (condition-case err
-            (let* ((entries (claude-log--parse-jsonl-file jsonl-file))
-                   (text (claude-log--extract-conversation-text entries)))
+            (let* ((entries (agent-log--parse-jsonl-file jsonl-file))
+                   (text (agent-log--extract-conversation-text entries)))
               (if (string-empty-p (string-trim text))
                   (progn
-                    (claude-log--index-update-props
-                     sid (list :summary claude-log--no-conversation-sentinel
-                               :summary-oneline claude-log--no-conversation-sentinel))
-                    (claude-log--summarize-next
+                    (agent-log--index-update-props
+                     sid (list :summary agent-log--no-conversation-sentinel
+                               :summary-oneline agent-log--no-conversation-sentinel))
+                    (agent-log--summarize-next
                      (cdr remaining) (1+ done) total gen))
-                (claude-log--summarize-one
+                (agent-log--summarize-one
                  sid meta text remaining done total gen)))
           (error
            (message "Failed to summarize %s: %s"
@@ -1769,34 +1770,34 @@ nothing."
            ;; Brief delay before the next request to avoid hammering the
            ;; LLM API and to let the event loop process pending I/O.
            (run-with-timer 0.1 nil
-                           #'claude-log--summarize-next
+                           #'agent-log--summarize-next
                            (cdr remaining)
                            (1+ done) total gen)))))))
 
-(defun claude-log--summarize-one (sid meta text remaining done total gen)
+(defun agent-log--summarize-one (sid meta text remaining done total gen)
   "Send a gptel request to summarize session SID.
 META is the session metadata plist.  TEXT is the extracted
 conversation text.  REMAINING, DONE, TOTAL, and GEN are
-chain-continuation state for `claude-log--summarize-next'."
-  (let* ((prompt (claude-log--build-summary-prompt text))
-         (resolved (claude-log--resolve-summary-backend-and-model))
+chain-continuation state for `agent-log--summarize-next'."
+  (let* ((prompt (agent-log--build-summary-prompt text))
+         (resolved (agent-log--resolve-summary-backend-and-model))
          (gptel-backend (car resolved))
          (gptel-model (cdr resolved))
          (gptel-use-tools nil)
          (request-id (cl-gensym "summarize-"))
-         (display (claude-log--summarize-display-name meta text sid)))
+         (display (agent-log--summarize-display-name meta text sid)))
     (message "Summarizing %d/%d with %s: %s..." (1+ done) total
              gptel-model
-             (claude-log--truncate-string display 70))
-    (setq claude-log--summarize-request-id request-id)
+             (agent-log--truncate-string display 70))
+    (setq agent-log--summarize-request-id request-id)
     (gptel-request prompt
-      :system claude-log--summary-system-message
+      :system agent-log--summary-system-message
       :callback
       (lambda (response _info)
-        (claude-log--summarize-callback
+        (agent-log--summarize-callback
          response request-id sid remaining done total gen)))))
 
-(defun claude-log--summarize-display-name (meta text sid)
+(defun agent-log--summarize-display-name (meta text sid)
   "Return a human-readable display name from META, TEXT, or SID."
   (let ((display (plist-get meta :display)))
     (if (or (null display)
@@ -1807,80 +1808,80 @@ chain-continuation state for `claude-log--summarize-next'."
           sid)
       display)))
 
-(defun claude-log--summarize-callback (response request-id sid remaining done total gen)
+(defun agent-log--summarize-callback (response request-id sid remaining done total gen)
   "Handle the gptel RESPONSE for a summary request.
 REQUEST-ID, SID, REMAINING, DONE, TOTAL, and GEN are
 chain-continuation state.  Non-string responses (tool-calls,
 reasoning blocks) are ignored; only the final string response or
 an error (nil) consumes the request guard and advances the chain."
-  (when (eq claude-log--summarize-request-id request-id)
+  (when (eq agent-log--summarize-request-id request-id)
     (cond
      ;; Success: got a string response.
      ((stringp response)
-      (setq claude-log--summarize-request-id nil)
-      (when (and claude-log--summarize-active
-                 (= gen claude-log--summarize-generation))
-        (let ((parsed (claude-log--parse-summary-response response)))
+      (setq agent-log--summarize-request-id nil)
+      (when (and agent-log--summarize-active
+                 (= gen agent-log--summarize-generation))
+        (let ((parsed (agent-log--parse-summary-response response)))
           (if parsed
               (progn
-                (claude-log--index-update-props
+                (agent-log--index-update-props
                  sid (list :summary (car parsed)
                            :summary-oneline (cdr parsed)))
-                (when claude-log-auto-rename-sessions
-                  (claude-log--maybe-rename-session sid (cdr parsed))))
+                (when agent-log-auto-rename-sessions
+                  (agent-log--maybe-rename-session sid (cdr parsed))))
             (message "Failed to parse summary for %s" sid)))
         ;; Brief delay before the next request to avoid hammering the
         ;; LLM API and to let the event loop process pending I/O.
         (run-with-timer
          0.1 nil
-         #'claude-log--summarize-next
+         #'agent-log--summarize-next
          (cdr remaining)
          (1+ done) total gen)))
      ;; Error: nil response from gptel.  Clear the guard and advance.
      ((null response)
-      (setq claude-log--summarize-request-id nil)
+      (setq agent-log--summarize-request-id nil)
       (message "Summary request failed for %s, skipping" sid)
-      (when (and claude-log--summarize-active
-                 (= gen claude-log--summarize-generation))
+      (when (and agent-log--summarize-active
+                 (= gen agent-log--summarize-generation))
         (run-with-timer
          0.1 nil
-         #'claude-log--summarize-next
+         #'agent-log--summarize-next
          (cdr remaining)
          (1+ done) total gen))))))
 
-(defun claude-log--maybe-insert-summary (session-id)
+(defun agent-log--maybe-insert-summary (session-id)
   "Insert the AI summary for SESSION-ID into the current buffer, if available."
-  (let* ((index (claude-log--read-index))
+  (let* ((index (agent-log--read-index))
          (entry (gethash session-id index))
          (summary (when entry (plist-get entry :summary))))
     (when summary
       (let ((inhibit-read-only t))
         (save-excursion
           ;; Remove any existing summary first
-          (claude-log--remove-inserted-summary)
+          (agent-log--remove-inserted-summary)
           ;; Insert after the # Session: header
           (goto-char (point-min))
           (when (re-search-forward "^# Session:.*\n\n" nil t)
             (let ((start (point)))
               (insert (format "> **Summary**: %s\n\n" summary))
               (put-text-property start (point)
-                                 'claude-log-summary t))))))))
+                                 'agent-log-summary t))))))))
 
-(defun claude-log--remove-inserted-summary ()
+(defun agent-log--remove-inserted-summary ()
   "Remove any previously inserted summary from the current buffer."
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (point-min))
       (let ((start (text-property-any
-                    (point-min) (point-max) 'claude-log-summary t)))
+                    (point-min) (point-max) 'agent-log-summary t)))
         (when start
           (let ((end (next-single-property-change
-                      start 'claude-log-summary nil (point-max))))
+                      start 'agent-log-summary nil (point-max))))
             (delete-region start end)))))))
 
 ;;;;; AI search
 
-(defconst claude-log--search-scope-system-message
+(defconst agent-log--search-scope-system-message
   "You are a search-scope assistant for a conversation log archive.  Given a \
 user's natural language query plus metadata about the archive (available \
 projects with session counts, and the date range), return a JSON object that \
@@ -1901,7 +1902,7 @@ clearly indicates a scope.
 Respond with ONLY the JSON object, no markdown formatting, no code fences."
   "System message for search scope narrowing (stage 1).")
 
-(defconst claude-log--search-system-message
+(defconst agent-log--search-system-message
   "You are a search assistant for a conversation log archive.  You receive a \
 user's query and a set of session summaries.  Each summary has a SESSION_ID, \
 a one-line summary, and a paragraph summary.
@@ -1920,38 +1921,38 @@ Guidelines:
 - Do not fabricate session content; only reference what the summaries describe."
   "System message for search selection (stage 2).")
 
-(defun claude-log--resolve-search-scope-backend-and-model ()
+(defun agent-log--resolve-search-scope-backend-and-model ()
   "Return (backend . model) for search scope narrowing (stage 1).
-Resolves `claude-log-search-scope-backend' and
-`claude-log-search-scope-model', inferring the backend from the
+Resolves `agent-log-search-scope-backend' and
+`agent-log-search-scope-model', inferring the backend from the
 model when needed."
-  (let* ((model (or claude-log-search-scope-model gptel-model))
+  (let* ((model (or agent-log-search-scope-model gptel-model))
          (backend (cond
-                   (claude-log-search-scope-backend
-                    (gptel-get-backend claude-log-search-scope-backend))
-                   (claude-log-search-scope-model
-                    (or (claude-log--find-backend-for-model
-                         claude-log-search-scope-model)
+                   (agent-log-search-scope-backend
+                    (gptel-get-backend agent-log-search-scope-backend))
+                   (agent-log-search-scope-model
+                    (or (agent-log--find-backend-for-model
+                         agent-log-search-scope-model)
                         gptel-backend))
                    (t gptel-backend))))
     (cons backend model)))
 
-(defun claude-log--resolve-search-backend-and-model ()
+(defun agent-log--resolve-search-backend-and-model ()
   "Return (backend . model) for search selection (stage 2).
-Resolves `claude-log-search-backend' and `claude-log-search-model',
+Resolves `agent-log-search-backend' and `agent-log-search-model',
 inferring the backend from the model when needed."
-  (let* ((model (or claude-log-search-model gptel-model))
+  (let* ((model (or agent-log-search-model gptel-model))
          (backend (cond
-                   (claude-log-search-backend
-                    (gptel-get-backend claude-log-search-backend))
-                   (claude-log-search-model
-                    (or (claude-log--find-backend-for-model
-                         claude-log-search-model)
+                   (agent-log-search-backend
+                    (gptel-get-backend agent-log-search-backend))
+                   (agent-log-search-model
+                    (or (agent-log--find-backend-for-model
+                         agent-log-search-model)
                         gptel-backend))
                    (t gptel-backend))))
     (cons backend model)))
 
-(defun claude-log--search-gather-metadata (sessions index)
+(defun agent-log--search-gather-metadata (sessions index)
   "Compute metadata for SESSIONS and INDEX needed by the search pipeline.
 Returns a plist with:
   :projects     - alist of (SHORT-NAME . COUNT) for projects with summaries
@@ -1960,7 +1961,7 @@ Returns a plist with:
   :summarized    - count of sessions with summaries
   :unsummarized  - count of sessions without summaries"
   (let ((project-counts (make-hash-table :test #'equal))
-        (active-ids (claude-log--active-session-ids))
+        (active-ids (agent-log--active-session-ids))
         (earliest nil)
         (latest nil)
         (summarized 0)
@@ -1970,11 +1971,11 @@ Returns a plist with:
              (meta (cdr session))
              (entry (gethash sid index))
              (ts (plist-get meta :timestamp))
-             (project (claude-log--short-project (plist-get meta :project))))
+             (project (agent-log--short-project (plist-get meta :project))))
         (let ((oneline (and entry (plist-get entry :summary-oneline))))
           (cond
            ;; Has a real summary: count it and track its metadata.
-           ((and oneline (not (equal oneline claude-log--no-conversation-sentinel)))
+           ((and oneline (not (equal oneline agent-log--no-conversation-sentinel)))
             (cl-incf summarized)
             (cl-incf (gethash project project-counts 0))
             (when (or (null earliest) (and (numberp ts) (< ts earliest)))
@@ -1982,7 +1983,7 @@ Returns a plist with:
             (when (or (null latest) (and (numberp ts) (> ts latest)))
               (setq latest ts)))
            ;; Empty session (sentinel) or active session: silently skip.
-           ((or (equal oneline claude-log--no-conversation-sentinel)
+           ((or (equal oneline agent-log--no-conversation-sentinel)
                 (member sid active-ids))
             nil)
            ;; No summary at all: genuinely unsummarized.
@@ -1997,7 +1998,7 @@ Returns a plist with:
             :summarized summarized
             :unsummarized unsummarized))))
 
-(defun claude-log--search-build-scope-prompt (query metadata)
+(defun agent-log--search-build-scope-prompt (query metadata)
   "Build the stage 1 scope-narrowing prompt from QUERY and METADATA."
   (let* ((projects (plist-get metadata :projects))
          (earliest (plist-get metadata :date-earliest))
@@ -2015,7 +2016,7 @@ Returns a plist with:
     (format "User query: %S\n\nArchive metadata:\n- Projects:\n%s\n- Date range: %s to %s\n- Total sessions with summaries: %d"
             query project-lines date-from date-to summarized)))
 
-(defun claude-log--search-parse-scope-response (response)
+(defun agent-log--search-parse-scope-response (response)
   "Parse RESPONSE as a JSON scope object.
 Returns a plist (:projects LIST-OR-ALL :date-after EPOCH-OR-NIL
 :date-before EPOCH-OR-NIL), or nil on parse failure."
@@ -2037,11 +2038,11 @@ Returns a plist (:projects LIST-OR-ALL :date-after EPOCH-OR-NIL
                                      (equal projects "all"))
                                 "all"
                               (if (listp projects) projects "all"))
-                  :date-after (claude-log--search-parse-date date-after)
-                  :date-before (claude-log--search-parse-date date-before)))
+                  :date-after (agent-log--search-parse-date date-after)
+                  :date-before (agent-log--search-parse-date date-before)))
         (error nil)))))
 
-(defun claude-log--search-parse-date (date-string)
+(defun agent-log--search-parse-date (date-string)
   "Parse DATE-STRING (YYYY-MM-DD) to epoch milliseconds, or nil."
   (when (and (stringp date-string)
              (string-match "\\`\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)\\'" date-string))
@@ -2051,7 +2052,7 @@ Returns a plist (:projects LIST-OR-ALL :date-after EPOCH-OR-NIL
                              (string-to-number (match-string 1 date-string)))))
       (* (float-time time) 1000))))
 
-(defun claude-log--search-apply-scope (sessions index scope)
+(defun agent-log--search-apply-scope (sessions index scope)
   "Filter SESSIONS using INDEX and SCOPE criteria.
 Returns sessions that match the project filter, fall within the
 date range, and have a summary in the INDEX."
@@ -2064,13 +2065,13 @@ date range, and have a summary in the INDEX."
               (meta (cdr session))
               (entry (gethash sid index))
               (ts (plist-get meta :timestamp))
-              (project (claude-log--short-project (plist-get meta :project))))
+              (project (agent-log--short-project (plist-get meta :project))))
          (and
           ;; Must have a summary.
           entry
           (plist-get entry :summary-oneline)
           (not (equal (plist-get entry :summary-oneline)
-                      claude-log--no-conversation-sentinel))
+                      agent-log--no-conversation-sentinel))
           ;; Project filter.
           (or (equal projects "all")
               (member project projects))
@@ -2083,20 +2084,20 @@ date range, and have a summary in the INDEX."
               (and (numberp ts) (<= ts (+ date-before 86400000)))))))
      sessions)))
 
-(defun claude-log--search-estimate-tokens (text)
+(defun agent-log--search-estimate-tokens (text)
   "Return a rough token estimate for TEXT (one token per four characters)."
   (if (and text (stringp text) (> (length text) 0))
       (/ (length text) 4)
     0))
 
-(defun claude-log--search-check-budget (prompt-text system-text model)
+(defun agent-log--search-check-budget (prompt-text system-text model)
   "Check if the estimated cost of PROMPT-TEXT and SYSTEM-TEXT exceeds the budget.
 MODEL is the gptel model symbol for pricing lookup.
 Returns non-nil if the user approves or the budget is not exceeded."
-  (let* ((estimated-tokens (+ (claude-log--search-estimate-tokens prompt-text)
-                              (claude-log--search-estimate-tokens system-text)))
-         (budget-type (car claude-log-search-budget))
-         (budget-limit (cdr claude-log-search-budget)))
+  (let* ((estimated-tokens (+ (agent-log--search-estimate-tokens prompt-text)
+                              (agent-log--search-estimate-tokens system-text)))
+         (budget-type (car agent-log-search-budget))
+         (budget-limit (cdr agent-log-search-budget)))
     (pcase budget-type
       ('tokens
        (if (> estimated-tokens budget-limit)
@@ -2116,14 +2117,14 @@ Returns non-nil if the user approves or the budget is not exceeded."
                                 estimated-cost budget-limit))
                      t))
                ;; No pricing data for this model; proceed.
-               (message "claude-log: no pricing data for %s; budget not enforced" model)
+               (message "agent-log: no pricing data for %s; budget not enforced" model)
                t))
          ;; gptel-plus not available; proceed with warning.
-         (message "claude-log: dollar budget requires gptel-plus; budget not enforced")
+         (message "agent-log: dollar budget requires gptel-plus; budget not enforced")
          t))
       (_ t))))
 
-(defun claude-log--search-build-selection-prompt (query filtered-sessions index)
+(defun agent-log--search-build-selection-prompt (query filtered-sessions index)
   "Build the stage 2 selection prompt from QUERY, FILTERED-SESSIONS and INDEX."
   (let ((session-blocks
          (mapconcat
@@ -2132,7 +2133,7 @@ Returns non-nil if the user approves or the budget is not exceeded."
                    (meta (cdr session))
                    (entry (gethash sid index))
                    (ts (plist-get meta :timestamp))
-                   (project (claude-log--short-project (plist-get meta :project)))
+                   (project (agent-log--short-project (plist-get meta :project)))
                    (date (if (numberp ts)
                              (format-time-string "%Y-%m-%d %H:%M" (/ ts 1000))
                            "unknown"))
@@ -2143,78 +2144,78 @@ Returns non-nil if the user approves or the budget is not exceeded."
           filtered-sessions "\n\n")))
     (format "User query: %S\n\n## Sessions\n\n%s" query session-blocks)))
 
-(defun claude-log--search-send-selection (query filtered-sessions index)
+(defun agent-log--search-send-selection (query filtered-sessions index)
   "Send the stage 2 selection request for QUERY over FILTERED-SESSIONS.
 INDEX is the session index for looking up summaries."
   (let* ((n (length filtered-sessions))
-         (prompt (claude-log--search-build-selection-prompt
+         (prompt (agent-log--search-build-selection-prompt
                   query filtered-sessions index))
-         (system claude-log--search-system-message)
-         (resolved (claude-log--resolve-search-backend-and-model))
+         (system agent-log--search-system-message)
+         (resolved (agent-log--resolve-search-backend-and-model))
          (gptel-backend (car resolved))
          (gptel-model (cdr resolved))
          (gptel-use-tools nil))
-    (if (claude-log--search-check-budget prompt system gptel-model)
+    (if (agent-log--search-check-budget prompt system gptel-model)
         (progn
           (message "Searching %d session(s) with %s..." n gptel-model)
           (gptel-request prompt
             :system system
             :callback
             (lambda (response _info)
-              (claude-log--search-selection-callback response))))
+              (agent-log--search-selection-callback response))))
       (message "Search aborted"))))
 
-(defun claude-log--search-selection-callback (response)
+(defun agent-log--search-selection-callback (response)
   "Handle the stage 2 RESPONSE."
   (cond
    ((stringp response)
-    (claude-log--search-display-results response))
+    (agent-log--search-display-results response))
    ((null response)
-    (message "claude-log: search request failed (nil response)"))))
+    (message "agent-log: search request failed (nil response)"))))
 
-(defvar claude-log-search-link-map
+(defvar agent-log-search-link-map
   (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'claude-log-search-follow-link)
-    (define-key map (kbd "RET") #'claude-log-search-follow-link)
+    (define-key map [mouse-1] #'agent-log-search-follow-link)
+    (define-key map (kbd "RET") #'agent-log-search-follow-link)
     map)
   "Keymap for clickable session links in search results.")
 
-(defvar claude-log-search-mode-map
+(defvar agent-log-search-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "q") #'quit-window)
-    (define-key map (kbd "RET") #'claude-log-search-follow-link)
+    (define-key map (kbd "RET") #'agent-log-search-follow-link)
     map)
-  "Keymap for `claude-log-search-mode'.")
+  "Keymap for `agent-log-search-mode'.")
 
-(define-derived-mode claude-log-search-mode markdown-view-mode "Claude-Log-Search"
-  "Mode for displaying AI search results over Claude Code session logs.
+(define-derived-mode agent-log-search-mode markdown-view-mode "Agent-Log-Search"
+  "Mode for displaying AI search results over session logs.
 Session references are clickable links that open the rendered log."
-  :group 'claude-log
+  :group 'agent-log
   (setq-local buffer-read-only t))
 
-(defun claude-log--search-display-results (narrative)
-  "Display NARRATIVE in the `*claude-log-search*' buffer."
-  (let ((buf (get-buffer-create "*claude-log-search*")))
+(defun agent-log--search-display-results (narrative)
+  "Display NARRATIVE in the `*agent-log-search*' buffer."
+  (let ((buf (get-buffer-create "*agent-log-search*")))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert narrative)
-        (claude-log--search-buttonize-links)
+        (agent-log--search-buttonize-links)
         (goto-char (point-min)))
       (let ((markdown-mode-hook nil)
             (markdown-view-mode-hook nil)
             (after-change-major-mode-hook
              (remq 'flycheck-global-mode-enable-in-buffers
                    after-change-major-mode-hook)))
-        (claude-log-search-mode))
+        (agent-log-search-mode))
       (set-buffer-modified-p nil))
     (pop-to-buffer buf)))
 
-(defconst claude-log--uuid-regexp
+(defconst agent-log--uuid-regexp
   "[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}"
   "Regexp matching a UUID.")
 
-(defun claude-log--search-buttonize-links ()
+(defun agent-log--search-buttonize-links ()
   "Make session UUIDs in the buffer clickable.
 First pass: replace markdown links `[text](UUID)' with clickable TEXT.
 Second pass: buttonize any remaining bare UUIDs.
@@ -2223,7 +2224,7 @@ does not overwrite it."
   (save-excursion
     ;; Pass 1: markdown links [desc](UUID) — work backward.
     (goto-char (point-max))
-    (let ((md-re (concat "\\[\\([^]]+\\)](\\(" claude-log--uuid-regexp "\\))")))
+    (let ((md-re (concat "\\[\\([^]]+\\)](\\(" agent-log--uuid-regexp "\\))")))
       (while (re-search-backward md-re nil t)
         (let ((desc (match-string 1))
               (sid (match-string 2))
@@ -2231,45 +2232,45 @@ does not overwrite it."
               (end (match-end 0)))
           (delete-region beg end)
           (goto-char beg)
-          (claude-log--search-insert-link desc sid))))
+          (agent-log--search-insert-link desc sid))))
     ;; Pass 2: bare UUIDs not already buttonized — work backward.
     (goto-char (point-max))
-    (while (re-search-backward claude-log--uuid-regexp nil t)
-      (unless (get-text-property (match-beginning 0) 'claude-log-search-session-id)
+    (while (re-search-backward agent-log--uuid-regexp nil t)
+      (unless (get-text-property (match-beginning 0) 'agent-log-search-session-id)
         (let ((sid (match-string 0))
               (beg (match-beginning 0))
               (end (match-end 0)))
           (delete-region beg end)
           (goto-char beg)
-          (claude-log--search-insert-link sid sid))))))
+          (agent-log--search-insert-link sid sid))))))
 
-(defun claude-log--search-insert-link (text session-id)
+(defun agent-log--search-insert-link (text session-id)
   "Insert TEXT as a clickable link to SESSION-ID.
 Text properties handle interaction (click, keymap, help-echo).
 An overlay handles the face so that font-lock cannot overwrite it."
   (let ((start (point)))
     (insert (propertize text
-                        'claude-log-search-session-id session-id
+                        'agent-log-search-session-id session-id
                         'mouse-face 'highlight
                         'help-echo (format "mouse-1: open session %s" session-id)
-                        'keymap claude-log-search-link-map))
+                        'keymap agent-log-search-link-map))
     (let ((ov (make-overlay start (point) nil t nil)))
       (overlay-put ov 'face 'link)
       (overlay-put ov 'evaporate t))))
 
-(defun claude-log-search-follow-link ()
+(defun agent-log-search-follow-link ()
   "Open the session log for the link at point."
   (interactive)
-  (let ((sid (get-text-property (point) 'claude-log-search-session-id)))
+  (let ((sid (get-text-property (point) 'agent-log-search-session-id)))
     (if (null sid)
         (user-error "No session link at point")
-      (let ((session (assoc sid claude-log--search-sessions-cache)))
+      (let ((session (assoc sid agent-log--search-sessions-cache)))
         (if session
-            (claude-log--open-rendered (car session) (cdr session))
-          (claude-log-open-session sid))))))
+            (agent-log--open-rendered (car session) (cdr session))
+          (agent-log-open-session sid))))))
 
 ;;;###autoload
-(defun claude-log-search (query)
+(defun agent-log-search (query)
   "Search session logs using AI with natural language QUERY.
 Stage 1 narrows the search scope by project and date range.
 Stage 2 selects relevant sessions and produces a narrative with
@@ -2277,63 +2278,63 @@ clickable links to the matching logs."
   (interactive "sSearch logs: ")
   (unless (require 'gptel nil t)
     (user-error "Package `gptel' is required for AI search"))
-  (let* ((sessions (claude-log--read-sessions))
-         (index (claude-log--read-index))
-         (metadata (claude-log--search-gather-metadata sessions index))
+  (let* ((sessions (agent-log--read-sessions))
+         (index (agent-log--read-index))
+         (metadata (agent-log--search-gather-metadata sessions index))
          (unsummarized (plist-get metadata :unsummarized))
          (summarized (plist-get metadata :summarized)))
     (when (zerop summarized)
-      (user-error "No sessions have summaries; run `claude-log-summarize-sessions' first"))
+      (user-error "No sessions have summaries; run `agent-log-summarize-sessions' first"))
     (when (> unsummarized 0)
       (unless (y-or-n-p
                (format "%d session(s) lack summaries and will be excluded. Continue? "
                        unsummarized))
         (user-error "Search aborted")))
-    (setq claude-log--search-sessions-cache sessions
-          claude-log--search-index-cache index)
-    (let* ((scope-prompt (claude-log--search-build-scope-prompt query metadata))
-           (resolved (claude-log--resolve-search-scope-backend-and-model))
+    (setq agent-log--search-sessions-cache sessions
+          agent-log--search-index-cache index)
+    (let* ((scope-prompt (agent-log--search-build-scope-prompt query metadata))
+           (resolved (agent-log--resolve-search-scope-backend-and-model))
            (gptel-backend (car resolved))
            (gptel-model (cdr resolved))
            (gptel-use-tools nil))
       (message "Analyzing search scope with %s..." gptel-model)
       (gptel-request scope-prompt
-        :system claude-log--search-scope-system-message
+        :system agent-log--search-scope-system-message
         :callback
         (lambda (response _info)
-          (claude-log--search-scope-callback
+          (agent-log--search-scope-callback
            response query sessions index))))))
 
-(defun claude-log--search-scope-callback (response query sessions index)
+(defun agent-log--search-scope-callback (response query sessions index)
   "Handle the stage 1 scope RESPONSE.
 QUERY is the original search query.  SESSIONS and INDEX are the
 full session list and index for filtering."
   (let ((scope (or (and (stringp response)
-                        (claude-log--search-parse-scope-response response))
+                        (agent-log--search-parse-scope-response response))
                    ;; Fallback: include everything.
                    (list :projects "all" :date-after nil :date-before nil))))
-    (let ((filtered (claude-log--search-apply-scope sessions index scope)))
+    (let ((filtered (agent-log--search-apply-scope sessions index scope)))
       (if (null filtered)
-          (claude-log--search-display-results
+          (agent-log--search-display-results
            "No sessions with summaries matched the search scope.")
         ;; Cap at 100 most recent sessions.
         (let ((truncated (> (length filtered) 100)))
           (when truncated
             (setq filtered (seq-take filtered 100)))
-          (claude-log--search-send-selection query filtered index))))))
+          (agent-log--search-send-selection query filtered index))))))
 
 ;;;;; Session rename
 
-(defun claude-log--session-has-custom-title-p (jsonl-file)
+(defun agent-log--session-has-custom-title-p (jsonl-file)
   "Return non-nil if JSONL-FILE already has a custom-title entry."
   (with-temp-buffer
     (insert-file-contents jsonl-file)
     (goto-char (point-min))
     (re-search-forward "\"type\"\\s-*:\\s-*\"custom-title\"" nil t)))
 
-(defun claude-log--append-custom-title (jsonl-file session-id title &optional index)
+(defun agent-log--append-custom-title (jsonl-file session-id title &optional index)
   "Append a custom-title entry to JSONL-FILE for SESSION-ID with TITLE.
-Also updates the cached JSONL size so that `claude-log--ensure-rendered'
+Also updates the cached JSONL size so that `agent-log--ensure-rendered'
 does not treat the file as stale.  When INDEX is non-nil, merge the
 new size into it (for batch operations); otherwise write to disk."
   (let ((entry (json-serialize
@@ -2343,25 +2344,25 @@ new size into it (for batch operations); otherwise write to disk."
     (write-region (concat entry "\n") nil jsonl-file t 'quiet)
     (when-let* ((new-size (file-attribute-size (file-attributes jsonl-file))))
       (if index
-          (claude-log--index-merge index session-id (list :jsonl-size new-size))
-        (claude-log--index-update-props
+          (agent-log--index-merge index session-id (list :jsonl-size new-size))
+        (agent-log--index-update-props
          session-id (list :jsonl-size new-size))))))
 
-(defun claude-log--maybe-rename-session (session-id oneline)
+(defun agent-log--maybe-rename-session (session-id oneline)
   "Rename SESSION-ID from ONELINE summary if appropriate.
 Finds the session JSONL file, checks it has no custom-title yet,
 and writes ONELINE as the title.  Does nothing if ONELINE is nil,
 empty, or the sentinel value."
   (when (and oneline
              (not (string-empty-p oneline))
-             (not (equal oneline claude-log--no-conversation-sentinel)))
-    (when-let* ((jsonl-file (claude-log--find-session-file session-id)))
-      (unless (claude-log--session-has-custom-title-p jsonl-file)
-        (claude-log--append-custom-title
+             (not (equal oneline agent-log--no-conversation-sentinel)))
+    (when-let* ((jsonl-file (agent-log--find-session-file session-id)))
+      (unless (agent-log--session-has-custom-title-p jsonl-file)
+        (agent-log--append-custom-title
          jsonl-file session-id oneline)))))
 
 ;;;###autoload
-(defun claude-log-rename-sessions (&optional force)
+(defun agent-log-rename-sessions (&optional force)
   "Rename sessions using their AI summaries.
 For each session that has a summary in the index but no
 custom-title in its JSONL file, write the summary as a
@@ -2372,10 +2373,10 @@ With prefix argument FORCE, overwrite existing custom titles.
 This is useful after changing the title format (e.g. from
 slugified to full-text titles).
 
-Sessions must be summarized first via `claude-log-summarize-sessions'."
+Sessions must be summarized first via `agent-log-summarize-sessions'."
   (interactive "P")
-  (let* ((sessions (claude-log--read-sessions))
-         (index (claude-log--read-index))
+  (let* ((sessions (agent-log--read-sessions))
+         (index (agent-log--read-index))
          (renamed 0)
          (skipped 0)
          (no-summary 0))
@@ -2388,18 +2389,18 @@ Sessions must be summarized first via `claude-log-summarize-sessions'."
         (cond
          ((or (null oneline)
               (string-empty-p oneline)
-              (equal oneline claude-log--no-conversation-sentinel))
+              (equal oneline agent-log--no-conversation-sentinel))
           (cl-incf no-summary))
          ((not (file-exists-p jsonl-file))
           (cl-incf skipped))
          ((and (not force)
-               (claude-log--session-has-custom-title-p jsonl-file))
+               (agent-log--session-has-custom-title-p jsonl-file))
           (cl-incf skipped))
          (t
-          (claude-log--append-custom-title jsonl-file sid oneline index)
+          (agent-log--append-custom-title jsonl-file sid oneline index)
           (cl-incf renamed)))))
     (when (> renamed 0)
-      (claude-log--write-index index))
+      (agent-log--write-index index))
     (message "Renamed %d session(s), skipped %d (already named), %d without summary"
              renamed skipped no-summary)))
 
@@ -2407,20 +2408,20 @@ Sessions must be summarized first via `claude-log-summarize-sessions'."
 
 (defvar claude-code-event-hook)
 
-(defun claude-log--session-end-handler (message)
+(defun agent-log--session-end-handler (message)
   "Handle a Claude Code event MESSAGE, triggering sync on session end.
-Intended for use in `claude-code-event-hook'.  Runs `claude-log-sync-all'
-followed by `claude-log-summarize-sessions' when `:type' is \"Stop\"."
+Intended for use in `claude-code-event-hook'.  Runs `agent-log-sync-all'
+followed by `agent-log-summarize-sessions' when `:type' is \"Stop\"."
   (when (eq (plist-get message :type) 'stop)
     ;; Delay briefly to let the JSONL file finish writing.
     (run-with-timer
      1 nil
      (lambda ()
-       (claude-log-sync-all
+       (agent-log-sync-all
         (lambda ()
           (when (and (require 'gptel nil t)
-                     (not claude-log--summarize-active))
-            (claude-log-summarize-sessions))))))
+                     (not agent-log--summarize-active))
+            (agent-log-summarize-sessions))))))
     nil))
 
 ;;;;; Resume session
@@ -2430,69 +2431,69 @@ followed by `claude-log-summarize-sessions' when `:type' is \"Stop\"."
 (declare-function claude-code--buffer-p "claude-code")
 (declare-function claude-code--extract-directory-from-buffer-name "claude-code")
 
-(defun claude-log--extract-session-id-from-buffer ()
+(defun agent-log--extract-session-id-from-buffer ()
   "Extract session ID from the front-matter comment of the current buffer."
   (save-excursion
     (goto-char (point-min))
     (when (re-search-forward "<!-- session: \\([^ ]+\\) -->" nil t)
       (match-string 1))))
 
-(defun claude-log--lookup-session-project (session-id)
+(defun agent-log--lookup-session-project (session-id)
   "Look up the project directory for SESSION-ID in history.jsonl."
-  (let ((history-file (expand-file-name "history.jsonl" claude-log-directory)))
+  (let ((history-file (expand-file-name "history.jsonl" agent-log-directory)))
     (when (file-exists-p history-file)
       (catch 'found
-        (dolist (entry (claude-log--parse-jsonl-file history-file))
+        (dolist (entry (agent-log--parse-jsonl-file history-file))
           (when (equal (plist-get entry :sessionId) session-id)
             (throw 'found (plist-get entry :project))))))))
 
-(defun claude-log--session-project-directory (session-id)
+(defun agent-log--session-project-directory (session-id)
   "Return the project directory for SESSION-ID.
 Try the buffer-local variable first, then fall back to history.jsonl."
-  (or (and claude-log--session-project
-           (not (string-empty-p claude-log--session-project))
-           (file-directory-p claude-log--session-project)
-           claude-log--session-project)
-      (when-let* ((project (claude-log--lookup-session-project session-id)))
+  (or (and agent-log--session-project
+           (not (string-empty-p agent-log--session-project))
+           (file-directory-p agent-log--session-project)
+           agent-log--session-project)
+      (when-let* ((project (agent-log--lookup-session-project session-id)))
         (and (not (string-empty-p project))
              (file-directory-p project)
              project))))
 
-(defun claude-log-resume-session ()
+(defun agent-log-resume-session ()
   "Resume the Claude Code session for the current buffer."
   (interactive)
   (unless (require 'claude-code nil t)
     (user-error "Package `claude-code' is required but not available"))
-  (let ((session-id (or claude-log--session-id
-                        (claude-log--extract-session-id-from-buffer))))
+  (let ((session-id (or agent-log--session-id
+                        (agent-log--extract-session-id-from-buffer))))
     (unless session-id
       (user-error "No session ID found in current buffer"))
-    (let ((project-dir (claude-log--session-project-directory session-id)))
+    (let ((project-dir (agent-log--session-project-directory session-id)))
       (if project-dir
           (cl-letf (((symbol-function 'claude-code--directory)
                      (lambda () project-dir)))
             (claude-code--start nil (list "--resume" session-id)))
         (claude-code--start nil (list "--resume" session-id))))))
 
-(defun claude-log--encode-project-path (directory)
+(defun agent-log--encode-project-path (directory)
   "Encode DIRECTORY as Claude Code does for its projects subdirectory.
 Replaces `/', `.', and space characters with `-'."
   (replace-regexp-in-string
    "[/. ]" "-"
    (directory-file-name (expand-file-name directory))))
 
-(defun claude-log--find-project-session-dir (directory)
+(defun agent-log--find-project-session-dir (directory)
   "Find the Claude projects subdirectory for DIRECTORY.
 Try both the expanded path and its `file-truename'."
-  (let ((projects-dir (expand-file-name "projects" claude-log-directory)))
+  (let ((projects-dir (expand-file-name "projects" agent-log-directory)))
     (cl-loop for path in (delete-dups
                           (list (expand-file-name directory)
                                 (file-truename (expand-file-name directory))))
-             for encoded = (claude-log--encode-project-path path)
+             for encoded = (agent-log--encode-project-path path)
              for dir = (expand-file-name encoded projects-dir)
              when (file-directory-p dir) return dir)))
 
-(defun claude-log--find-latest-jsonl (directory)
+(defun agent-log--find-latest-jsonl (directory)
   "Find the most recently modified JSONL file in DIRECTORY."
   (let ((files (directory-files directory t "\\.jsonl\\'"))
         latest latest-time)
@@ -2503,15 +2504,15 @@ Try both the expanded path and its `file-truename'."
           (setq latest f latest-time mtime))))
     latest))
 
-(defconst claude-log--status-directory "/tmp/claude-code-status/"
+(defconst agent-log--status-directory "/tmp/claude-code-status/"
   "Directory where Claude Code writes per-buffer JSON status files.")
 
-(defun claude-log--read-status-file ()
+(defun agent-log--read-status-file ()
   "Read the status file for the Claude session in the current buffer.
 Return a plist with :session_id and :transcript_path, or nil.
 The status file is written by Claude Code to
-`claude-log--status-directory', keyed by sanitized buffer name."
-  (when-let* ((file (claude-log--status-file-for-buffer))
+`agent-log--status-directory', keyed by sanitized buffer name."
+  (when-let* ((file (agent-log--status-file-for-buffer))
               ((file-exists-p file)))
     (condition-case nil
         (let* ((json (json-parse-string
@@ -2525,27 +2526,27 @@ The status file is written by Claude Code to
             (list :session_id sid :transcript_path path)))
       (error nil))))
 
-(defun claude-log--session-id-from-buffer ()
+(defun agent-log--session-id-from-buffer ()
   "Return the session ID for the Claude session in the current buffer.
 Read it from the status file that Claude Code writes to
-`claude-log--status-directory', keyed by sanitized buffer name."
-  (plist-get (claude-log--read-status-file) :session_id))
+`agent-log--status-directory', keyed by sanitized buffer name."
+  (plist-get (agent-log--read-status-file) :session_id))
 
-(defun claude-log--status-file-for-buffer ()
+(defun agent-log--status-file-for-buffer ()
   "Return the status file path for the current buffer."
   (expand-file-name
-   (concat (claude-log--sanitize-buffer-name) ".json")
-   claude-log--status-directory))
+   (concat (agent-log--sanitize-buffer-name) ".json")
+   agent-log--status-directory))
 
-(defun claude-log--sanitize-buffer-name ()
+(defun agent-log--sanitize-buffer-name ()
   "Sanitize the current buffer name for use as a filename.
 Replace every non-alphanumeric, non-underscore, non-hyphen
 character with an underscore."
   (replace-regexp-in-string "[^a-zA-Z0-9_-]" "_" (buffer-name)))
 
-(defun claude-log--find-session-for-project (directory sessions)
+(defun agent-log--find-session-for-project (directory sessions)
   "Find the latest session in SESSIONS whose project matches DIRECTORY.
-SESSIONS should be sorted newest-first (as from `claude-log--read-sessions').
+SESSIONS should be sorted newest-first (as from `agent-log--read-sessions').
 DIRECTORY is compared against each session's :project field using
 both the expanded path and `file-truename'."
   (let ((targets (delete-dups
@@ -2560,7 +2561,7 @@ both the expanded path and `file-truename'."
              return session)))
 
 ;;;###autoload
-(defun claude-log-open-session-at-point ()
+(defun agent-log-open-session-at-point ()
   "Open the log for the Claude Code session in the current buffer.
 The current buffer must be a Claude Code terminal buffer.
 When possible, identify the exact session via the status file;
@@ -2572,119 +2573,119 @@ directory or to `history.jsonl'."
   (unless (claude-code--buffer-p (current-buffer))
     (user-error "Not in a Claude Code buffer"))
   (let* ((dir (claude-code--extract-directory-from-buffer-name (buffer-name)))
-         (status (claude-log--read-status-file))
+         (status (agent-log--read-status-file))
          ;; Primary: use transcript_path from the status file directly.
          (transcript (plist-get status :transcript_path))
          (session-id (plist-get status :session_id))
          (jsonl (or (and transcript (file-exists-p transcript) transcript)
                     ;; Secondary: construct from session-dir + session-id.
                     (let ((session-dir
-                           (and dir (claude-log--find-project-session-dir dir))))
+                           (and dir (agent-log--find-project-session-dir dir))))
                       (or (and session-id session-dir
                                (let ((f (expand-file-name
                                          (concat session-id ".jsonl")
                                          session-dir)))
                                  (and (file-exists-p f) f)))
                           (and session-dir
-                               (claude-log--find-latest-jsonl session-dir)))))))
+                               (agent-log--find-latest-jsonl session-dir)))))))
     (if jsonl
-        (claude-log-open-file jsonl)
+        (agent-log-open-file jsonl)
       ;; Fallback: search history.jsonl for sessions matching this project
-      (let ((match (claude-log--find-session-for-project
-                    dir (claude-log--read-sessions))))
+      (let ((match (agent-log--find-session-for-project
+                    dir (agent-log--read-sessions))))
         (unless match
           (user-error "No session log found for %s" (or dir "this buffer")))
-        (claude-log--open-rendered (car match) (cdr match))))))
+        (agent-log--open-rendered (car match) (cdr match))))))
 
 ;;;;; Transient menu
 
-(transient-define-suffix claude-log-cycle-show-thinking ()
-  "Cycle `claude-log-show-thinking' through hidden → collapsed → visible."
+(transient-define-suffix agent-log-cycle-show-thinking ()
+  "Cycle `agent-log-show-thinking' through hidden → collapsed → visible."
   :description (lambda ()
                  (format "Show thinking: %s"
-                         (propertize (symbol-name claude-log-show-thinking)
+                         (propertize (symbol-name agent-log-show-thinking)
                                      'face 'transient-value)))
   :transient t
   (interactive)
-  (setq claude-log-show-thinking
-        (pcase claude-log-show-thinking
+  (setq agent-log-show-thinking
+        (pcase agent-log-show-thinking
           ('hidden 'collapsed)
           ('collapsed 'visible)
           ('visible 'hidden)))
-  (when (derived-mode-p 'claude-log-mode)
-    (claude-log--collapse-as-configured))
-  (message "Show thinking → %s" claude-log-show-thinking))
+  (when (derived-mode-p 'agent-log-mode)
+    (agent-log--collapse-as-configured))
+  (message "Show thinking → %s" agent-log-show-thinking))
 
-(transient-define-suffix claude-log-cycle-show-tools ()
-  "Cycle `claude-log-show-tools' through hidden → collapsed → visible."
+(transient-define-suffix agent-log-cycle-show-tools ()
+  "Cycle `agent-log-show-tools' through hidden → collapsed → visible."
   :description (lambda ()
                  (format "Show tools: %s"
-                         (propertize (symbol-name claude-log-show-tools)
+                         (propertize (symbol-name agent-log-show-tools)
                                      'face 'transient-value)))
   :transient t
   (interactive)
-  (setq claude-log-show-tools
-        (pcase claude-log-show-tools
+  (setq agent-log-show-tools
+        (pcase agent-log-show-tools
           ('hidden 'collapsed)
           ('collapsed 'visible)
           ('visible 'hidden)))
-  (when (derived-mode-p 'claude-log-mode)
-    (claude-log--collapse-as-configured))
-  (message "Show tools → %s" claude-log-show-tools))
+  (when (derived-mode-p 'agent-log-mode)
+    (agent-log--collapse-as-configured))
+  (message "Show tools → %s" agent-log-show-tools))
 
-(transient-define-suffix claude-log-toggle-live-update ()
-  "Toggle `claude-log-live-update'."
+(transient-define-suffix agent-log-toggle-live-update ()
+  "Toggle `agent-log-live-update'."
   :description (lambda ()
                  (format "Live update: %s"
-                         (propertize (if claude-log-live-update "on" "off")
+                         (propertize (if agent-log-live-update "on" "off")
                                      'face 'transient-value)))
   :transient t
   (interactive)
-  (setq claude-log-live-update (not claude-log-live-update))
-  (message "Live update → %s" (if claude-log-live-update "on" "off")))
+  (setq agent-log-live-update (not agent-log-live-update))
+  (message "Live update → %s" (if agent-log-live-update "on" "off")))
 
-(transient-define-suffix claude-log-toggle-group-by-project ()
-  "Toggle `claude-log-group-by-project'."
+(transient-define-suffix agent-log-toggle-group-by-project ()
+  "Toggle `agent-log-group-by-project'."
   :description (lambda ()
                  (format "Group by project: %s"
-                         (propertize (if claude-log-group-by-project "on" "off")
+                         (propertize (if agent-log-group-by-project "on" "off")
                                      'face 'transient-value)))
   :transient t
   (interactive)
-  (setq claude-log-group-by-project (not claude-log-group-by-project))
+  (setq agent-log-group-by-project (not agent-log-group-by-project))
   (message "Group by project → %s"
-           (if claude-log-group-by-project "on" "off")))
+           (if agent-log-group-by-project "on" "off")))
 
-;;;###autoload (autoload 'claude-log-menu "claude-log" nil t)
-(transient-define-prefix claude-log-menu ()
+;;;###autoload (autoload 'agent-log-menu "agent-log" nil t)
+(transient-define-prefix agent-log-menu ()
   "Transient menu for Claude Log commands."
   ["Open"
-   ("b" "Browse sessions" claude-log-browse-sessions)
-   ("l" "Open latest" claude-log-open-latest)
-   ("f" "Open file" claude-log-open-file)
-   ("d" "Open rendered directory" claude-log-open-rendered-directory)
-   ("." "Open session at point" claude-log-open-session-at-point)
-   ("r" "Resume session" claude-log-resume-session)]
+   ("b" "Browse sessions" agent-log-browse-sessions)
+   ("l" "Open latest" agent-log-open-latest)
+   ("f" "Open file" agent-log-open-file)
+   ("d" "Open rendered directory" agent-log-open-rendered-directory)
+   ("." "Open session at point" agent-log-open-session-at-point)
+   ("r" "Resume session" agent-log-resume-session)]
   ["Sync & AI"
-   ("S" "Sync all" claude-log-sync-all)
-   ("s" "Summarize sessions" claude-log-summarize-sessions)
-   ("/" "AI search" claude-log-search)
-   ("R" "Rename from summaries" claude-log-rename-sessions)
-   ("x" "Stop summarizing" claude-log-stop-summarizing)]
+   ("S" "Sync all" agent-log-sync-all)
+   ("s" "Summarize sessions" agent-log-summarize-sessions)
+   ("/" "AI search" agent-log-search)
+   ("R" "Rename from summaries" agent-log-rename-sessions)
+   ("x" "Stop summarizing" agent-log-stop-summarizing)]
   ["Navigate"
-   :if (lambda () (derived-mode-p 'claude-log-mode))
-   ("n" "Next turn" claude-log-next-turn)
-   ("p" "Previous turn" claude-log-previous-turn)
-   ("TAB" "Toggle section" claude-log-toggle-section)
-   ("C" "Collapse all tools" claude-log-collapse-all-tools)
-   ("E" "Expand all" claude-log-expand-all)
-   ("G" "Refresh" claude-log-refresh)
-   ("w" "Copy turn" claude-log-copy-turn)]
+   :if (lambda () (derived-mode-p 'agent-log-mode))
+   ("n" "Next turn" agent-log-next-turn)
+   ("p" "Previous turn" agent-log-previous-turn)
+   ("TAB" "Toggle section" agent-log-toggle-section)
+   ("C" "Collapse all tools" agent-log-collapse-all-tools)
+   ("E" "Expand all" agent-log-expand-all)
+   ("G" "Refresh" agent-log-refresh)
+   ("w" "Copy turn" agent-log-copy-turn)]
   ["Settings"
-   ("t" claude-log-cycle-show-thinking)
-   ("o" claude-log-cycle-show-tools)
-   ("u" claude-log-toggle-live-update)
-   ("g" claude-log-toggle-group-by-project)])
+   ("t" agent-log-cycle-show-thinking)
+   ("o" agent-log-cycle-show-tools)
+   ("u" agent-log-toggle-live-update)
+   ("g" agent-log-toggle-group-by-project)])
 
-(provide 'claude-log)
-;;; claude-log.el ends here
+(provide 'agent-log)
+;;; agent-log.el ends here

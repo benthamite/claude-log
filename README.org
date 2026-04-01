@@ -1,31 +1,31 @@
-#+title: claude-log: Browse Claude Code conversation logs in Emacs
+#+title: agent-log: Browse Claude Code conversation logs in Emacs
 #+author: Pablo Stafforini
 #+email: pablo@stafforini.com
 #+language: en
 #+options: ':t toc:t author:t email:t num:t
 #+startup: content
-#+export_file_name: claude-log.info
-#+texinfo_filename: claude-log.info
+#+export_file_name: agent-log.info
+#+texinfo_filename: agent-log.info
 #+texinfo_dir_category: Emacs misc features
-#+texinfo_dir_title: Claude-Log: (claude-log)
+#+texinfo_dir_title: Agent-Log: (agent-log)
 #+texinfo_dir_desc: Browse Claude Code conversation logs in Emacs
 
-This manual describes the features and customization options for the Emacs Lisp file =claude-log.el=.
+This manual describes the features and customization options for the Emacs Lisp file =agent-log.el=.
 
 * Overview
 :PROPERTIES:
 :CUSTOM_ID: h:overview
 :END:
 
-[[https://docs.anthropic.com/en/docs/claude-code][Claude Code]] stores complete conversation transcripts as JSONL files under =~/.claude/projects/=.  While these files contain a full record of every session, they are not human-readable: each line is a JSON object with nested content arrays, tool-use blocks, thinking sections, and system metadata.  =claude-log.el= renders these transcripts into readable Markdown files and provides a dedicated Emacs interface for browsing, searching, and navigating them.
+[[https://docs.anthropic.com/en/docs/claude-code][Claude Code]] stores complete conversation transcripts as JSONL files under =~/.claude/projects/=.  While these files contain a full record of every session, they are not human-readable: each line is a JSON object with nested content arrays, tool-use blocks, thinking sections, and system metadata.  =agent-log.el= renders these transcripts into readable Markdown files and provides a dedicated Emacs interface for browsing, searching, and navigating them.
 
 The package maintains a mirror directory of pre-rendered Markdown files under =~/.claude/rendered/=, organized by project.  This means that standard tools such as =consult-ripgrep=, Dired, and =grep= work natively on readable content without any special integration.
 
-The core capabilities of =claude-log.el= are:
+The core capabilities of =agent-log.el= are:
 
 - *Session browsing*.  A ~completing-read~ interface lists all sessions, grouped by project or as a flat list, sorted by recency.  Each candidate shows the date, project name, and either an AI-generated summary or the first user message ([[#h:session-browsing][Session browsing]]).
 - *Lazy rendering*.  Sessions are rendered to =.md= files on first access.  The package tracks JSONL file sizes in an index to avoid re-rendering files that have not changed ([[#h:sync-and-rendering][Sync and rendering]]).
-- *Live updates*.  For active sessions, a ~file-notify~ watcher detects JSONL changes and appends new entries to both the =.md= file on disk and the open buffer in real time ([[#h:claude-log-live-update][~claude-log-live-update~]]).
+- *Live updates*.  For active sessions, a ~file-notify~ watcher detects JSONL changes and appends new entries to both the =.md= file on disk and the open buffer in real time ([[#h:agent-log-live-update][~agent-log-live-update~]]).
 - *Outline navigation*.  Rendered buffers use ~outline-minor-mode~ for folding tool calls, thinking blocks, and tool results.  Dedicated keybindings jump between conversation turns ([[#h:navigation][Navigation]]).
 - *Smart tool summaries*.  Each tool call is summarized by its most relevant input—the file path for Read/Write, the command for Bash, the pattern for Grep, and so on.
 - *AI-powered session summaries*.  An optional integration with =gptel= generates concise one-line and paragraph summaries for each session, displayed in the browser and at the top of rendered buffers ([[#h:summary-generation][Summary generation]]).
@@ -34,7 +34,7 @@ The core capabilities of =claude-log.el= are:
 
 The package requires Emacs 29.1 or later and [[https://jblevins.org/projects/markdown-mode/][markdown-mode]] 2.6 or later.  The optional summary feature requires [[https://github.com/karthink/gptel][gptel]].  Session resumption requires [[https://github.com/stevemolitor/claude-code.el][claude-code]].
 
-The development repository is on [[https://github.com/benthamite/claude-log][GitHub]].
+The development repository is on [[https://github.com/benthamite/agent-log][GitHub]].
 
 * Installation
 :PROPERTIES:
@@ -49,7 +49,7 @@ The development repository is on [[https://github.com/benthamite/claude-log][Git
 Clone the repository to a directory on your Emacs load path and add the following to your init file:
 
 #+begin_src emacs-lisp
-(require 'claude-log)
+(require 'agent-log)
 #+end_src
 
 ** Installation with use-package
@@ -61,20 +61,20 @@ If you use ~use-package~, add one of the following snippets to your init file:
 
 #+begin_src emacs-lisp
 ;; with vc
-(use-package claude-log
-  :vc (:url "https://github.com/benthamite/claude-log"))
+(use-package agent-log
+  :vc (:url "https://github.com/benthamite/agent-log"))
 
 ;; with elpaca
-(use-package claude-log
-  :ensure (:host github :repo "benthamite/claude-log"))
+(use-package agent-log
+  :ensure (:host github :repo "benthamite/agent-log"))
 
 ;; with straight
-(use-package claude-log
-  :straight (:host github :repo "benthamite/claude-log"))
+(use-package agent-log
+  :straight (:host github :repo "benthamite/agent-log"))
 
 ;; with quelpa
-(use-package claude-log
-  :quelpa (claude-log :fetcher github :repo "benthamite/claude-log"))
+(use-package agent-log
+  :quelpa (agent-log :fetcher github :repo "benthamite/agent-log"))
 #+end_src
 
 * User options
@@ -82,31 +82,31 @@ If you use ~use-package~, add one of the following snippets to your init file:
 :CUSTOM_ID: h:user-options
 :END:
 
-All user options belong to the ~claude-log~ customization group.  You can browse them interactively with =M-x customize-group RET claude-log RET=.
+All user options belong to the ~agent-log~ customization group.  You can browse them interactively with =M-x customize-group RET agent-log RET=.
 
 ** Directory configuration
 :PROPERTIES:
 :CUSTOM_ID: h:directory-configuration
 :END:
 
-#+vindex: claude-log-directory
-#+vindex: claude-log-rendered-directory
+#+vindex: agent-log-directory
+#+vindex: agent-log-rendered-directory
 
-The user option ~claude-log-directory~ specifies the root directory of your Claude Code configuration.  The package reads =history.jsonl= in this directory and looks for session files under the =projects/= subdirectory.  The default value is =~/.claude=.  You would change this only if you have configured Claude Code to use a non-standard location.
+The user option ~agent-log-directory~ specifies the root directory of your Claude Code configuration.  The package reads =history.jsonl= in this directory and looks for session files under the =projects/= subdirectory.  The default value is =~/.claude=.  You would change this only if you have configured Claude Code to use a non-standard location.
 
-The user option ~claude-log-rendered-directory~ specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated =.md= file within it ([[#h:sync-and-rendering][Sync and rendering]]).  The default value is =~/.claude/rendered=.  You might change this if you want rendered files to live outside the Claude configuration directory, for example on a path indexed by a desktop search tool.
+The user option ~agent-log-rendered-directory~ specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated =.md= file within it ([[#h:sync-and-rendering][Sync and rendering]]).  The default value is =~/.claude/rendered=.  You might change this if you want rendered files to live outside the Claude configuration directory, for example on a path indexed by a desktop search tool.
 
 ** Display of thinking and tool sections
 :PROPERTIES:
 :CUSTOM_ID: h:display-of-thinking-and-tool-sections
 :END:
 
-#+vindex: claude-log-show-thinking
-#+vindex: claude-log-show-tools
+#+vindex: agent-log-show-thinking
+#+vindex: agent-log-show-tools
 
 Claude Code conversations contain thinking blocks (the model's chain-of-thought reasoning) and tool-use sections (file reads, bash commands, grep searches, and so on).  These are valuable for understanding what the assistant did, but they can also be verbose and clutter the view when you are reading the high-level conversation.
 
-The user option ~claude-log-show-thinking~ controls how thinking blocks appear.  It accepts one of three symbols:
+The user option ~agent-log-show-thinking~ controls how thinking blocks appear.  It accepts one of three symbols:
 
 - ~hidden~: thinking blocks are omitted entirely from the rendered output.
 - ~collapsed~: thinking blocks are rendered but folded under a heading, so you see the heading but not the content until you expand it.
@@ -114,34 +114,34 @@ The user option ~claude-log-show-thinking~ controls how thinking blocks appear. 
 
 The default value is ~collapsed~.
 
-The user option ~claude-log-show-tools~ works identically but controls tool-use and tool-result sections.  It also defaults to ~collapsed~.
+The user option ~agent-log-show-tools~ works identically but controls tool-use and tool-result sections.  It also defaults to ~collapsed~.
 
 When both options are set to ~hidden~, assistant turns that contain only tool calls and thinking (no visible text) are hidden entirely, including their heading and separator.
 
-You can toggle individual sections interactively using ~claude-log-toggle-section~ ([[#h:section-visibility][Section visibility]]).
+You can toggle individual sections interactively using ~agent-log-toggle-section~ ([[#h:section-visibility][Section visibility]]).
 
 ** Timestamps
 :PROPERTIES:
 :CUSTOM_ID: h:timestamps
 :END:
 
-#+vindex: claude-log-timestamp-format
+#+vindex: agent-log-timestamp-format
 
-The user option ~claude-log-timestamp-format~ controls the format string used when displaying timestamps in rendered output.  It follows the conventions of ~format-time-string~.  The default value is ="%Y-%m-%d %H:%M:%S"=.
+The user option ~agent-log-timestamp-format~ controls the format string used when displaying timestamps in rendered output.  It follows the conventions of ~format-time-string~.  The default value is ="%Y-%m-%d %H:%M:%S"=.
 
 ** Tool output limits
 :PROPERTIES:
 :CUSTOM_ID: h:tool-output-limits
 :END:
 
-#+vindex: claude-log-max-tool-input-length
-#+vindex: claude-log-max-tool-result-length
+#+vindex: agent-log-max-tool-input-length
+#+vindex: agent-log-max-tool-result-length
 
 Tool calls can have very long inputs (entire file contents for Write, lengthy commands for Bash) and even longer results.  Two user options control how much of this content is shown in the rendered output.
 
-The user option ~claude-log-max-tool-input-length~ sets the maximum number of characters displayed for tool input summaries.  Text beyond this limit is truncated with an ellipsis.  The default value is ~200~.
+The user option ~agent-log-max-tool-input-length~ sets the maximum number of characters displayed for tool input summaries.  Text beyond this limit is truncated with an ellipsis.  The default value is ~200~.
 
-The user option ~claude-log-max-tool-result-length~ sets the maximum number of characters displayed for tool result content.  The default value is ~500~.
+The user option ~agent-log-max-tool-result-length~ sets the maximum number of characters displayed for tool result content.  The default value is ~500~.
 
 Increase these values if you find that truncated tool content is hiding information you need.  Decrease them if rendered files are too large or buffers are slow to navigate.
 
@@ -150,24 +150,24 @@ Increase these values if you find that truncated tool content is hiding informat
 :CUSTOM_ID: h:session-browser-options
 :END:
 
-#+vindex: claude-log-group-by-project
-#+vindex: claude-log-display-width
-#+vindex: claude-log-slug-max-length
+#+vindex: agent-log-group-by-project
+#+vindex: agent-log-display-width
+#+vindex: agent-log-slug-max-length
 
-The user option ~claude-log-group-by-project~ controls whether ~claude-log-browse-sessions~ groups sessions by project ([[#h:session-browsing][Session browsing]]).  When non-~nil~ (the default), the command first prompts for a project, then for a session within that project.  When ~nil~, all sessions are presented in a single flat list.  The grouped view is more convenient when you have many sessions across several projects; the flat view is useful for quickly finding a recent session regardless of project.
+The user option ~agent-log-group-by-project~ controls whether ~agent-log-browse-sessions~ groups sessions by project ([[#h:session-browsing][Session browsing]]).  When non-~nil~ (the default), the command first prompts for a project, then for a session within that project.  When ~nil~, all sessions are presented in a single flat list.  The grouped view is more convenient when you have many sessions across several projects; the flat view is useful for quickly finding a recent session regardless of project.
 
-The user option ~claude-log-display-width~ sets the maximum width of the first-message column in the session browser.  Longer messages are truncated.  The default value is ~60~.
+The user option ~agent-log-display-width~ sets the maximum width of the first-message column in the session browser.  Longer messages are truncated.  The default value is ~60~.
 
-The user option ~claude-log-slug-max-length~ sets the maximum length of the slug portion of rendered filenames.  The slug is derived from the first user message and appears after the date in the filename (e.g., =2026-02-22_11-56_redesign-claude-log-package.md=).  The default value is ~50~.
+The user option ~agent-log-slug-max-length~ sets the maximum length of the slug portion of rendered filenames.  The slug is derived from the first user message and appears after the date in the filename (e.g., =2026-02-22_11-56_redesign-agent-log-package.md=).  The default value is ~50~.
 
 ** Live updates
 :PROPERTIES:
 :CUSTOM_ID: h:live-updates
 :END:
 
-#+vindex: claude-log-live-update
+#+vindex: agent-log-live-update
 
-The user option ~claude-log-live-update~ controls whether the package watches the source JSONL file for changes when a rendered buffer is open.  When non-~nil~ (the default), a ~file-notify~ watcher detects new entries appended to the JSONL file and renders them into both the open buffer and the =.md= file on disk.  This means you can have a rendered log open alongside an active Claude Code session and see new turns appear as they happen.
+The user option ~agent-log-live-update~ controls whether the package watches the source JSONL file for changes when a rendered buffer is open.  When non-~nil~ (the default), a ~file-notify~ watcher detects new entries appended to the JSONL file and renders them into both the open buffer and the =.md= file on disk.  This means you can have a rendered log open alongside an active Claude Code session and see new turns appear as they happen.
 
 Set this to ~nil~ if you experience performance issues with file watching, or if you are on a system where ~file-notify~ is not reliable (e.g., certain remote filesystems via TRAMP).
 
@@ -176,40 +176,40 @@ Set this to ~nil~ if you experience performance issues with file watching, or if
 :CUSTOM_ID: h:summary-generation-options
 :END:
 
-#+vindex: claude-log-summary-backend
-#+vindex: claude-log-summary-model
-#+vindex: claude-log-summary-max-content-length
+#+vindex: agent-log-summary-backend
+#+vindex: agent-log-summary-model
+#+vindex: agent-log-summary-max-content-length
 
 The summary feature uses =gptel= to generate concise descriptions of each session.  Three user options control how summaries are generated.
 
-The user option ~claude-log-summary-backend~ specifies the =gptel= backend name to use for summary requests, for example ="Gemini"= or ="Claude"=.  When ~nil~ (the default), the backend is inferred from ~claude-log-summary-model~ if set, otherwise it falls back to ~gptel-backend~.
+The user option ~agent-log-summary-backend~ specifies the =gptel= backend name to use for summary requests, for example ="Gemini"= or ="Claude"=.  When ~nil~ (the default), the backend is inferred from ~agent-log-summary-model~ if set, otherwise it falls back to ~gptel-backend~.
 
-The user option ~claude-log-summary-model~ specifies the =gptel= model to use, for example ~claude-haiku-4-5-20251001~.  A smaller, faster model is often sufficient for summarization.  When ~nil~ (the default), it uses ~gptel-model~.
+The user option ~agent-log-summary-model~ specifies the =gptel= model to use, for example ~claude-haiku-4-5-20251001~.  A smaller, faster model is often sufficient for summarization.  When ~nil~ (the default), it uses ~gptel-model~.
 
-The user option ~claude-log-summary-max-content-length~ sets the maximum number of characters of conversation text sent to the LLM for summarization.  The package extracts the plain text of user and assistant messages (ignoring tool calls and thinking blocks) and truncates the result to this limit.  The default value is ~8000~.  Increase this for longer, more detailed summaries at the cost of higher token usage; decrease it if you want to minimize API costs.
+The user option ~agent-log-summary-max-content-length~ sets the maximum number of characters of conversation text sent to the LLM for summarization.  The package extracts the plain text of user and assistant messages (ignoring tool calls and thinking blocks) and truncates the result to this limit.  The default value is ~8000~.  Increase this for longer, more detailed summaries at the cost of higher token usage; decrease it if you want to minimize API costs.
 
 ** AI search options
 :PROPERTIES:
 :CUSTOM_ID: h:ai-search-options
 :END:
 
-#+vindex: claude-log-search-scope-backend
-#+vindex: claude-log-search-scope-model
-#+vindex: claude-log-search-backend
-#+vindex: claude-log-search-model
-#+vindex: claude-log-search-budget
+#+vindex: agent-log-search-scope-backend
+#+vindex: agent-log-search-scope-model
+#+vindex: agent-log-search-backend
+#+vindex: agent-log-search-model
+#+vindex: agent-log-search-budget
 
 The AI search feature ([[#h:ai-search][AI search]]) uses two LLM calls: a scope-narrowing stage and a selection stage.  Each stage has its own backend and model options, allowing you to use a cheap, fast model for scope narrowing and a more capable model for the selection narrative.
 
-The user option ~claude-log-search-scope-backend~ specifies the =gptel= backend for stage 1 (scope narrowing), for example ="Gemini"= or ="Claude"=.  When ~nil~ (the default), the backend is inferred from ~claude-log-search-scope-model~ if set, otherwise it falls back to ~gptel-backend~.
+The user option ~agent-log-search-scope-backend~ specifies the =gptel= backend for stage 1 (scope narrowing), for example ="Gemini"= or ="Claude"=.  When ~nil~ (the default), the backend is inferred from ~agent-log-search-scope-model~ if set, otherwise it falls back to ~gptel-backend~.
 
-The user option ~claude-log-search-scope-model~ specifies the model for stage 1.  A small, fast model (e.g. ~claude-haiku-4-5-20251001~) is recommended since the task is simple classification.  When ~nil~ (the default), it uses ~gptel-model~.
+The user option ~agent-log-search-scope-model~ specifies the model for stage 1.  A small, fast model (e.g. ~claude-haiku-4-5-20251001~) is recommended since the task is simple classification.  When ~nil~ (the default), it uses ~gptel-model~.
 
-The user option ~claude-log-search-backend~ specifies the =gptel= backend for stage 2 (selection and narrative).  When ~nil~ (the default), the backend is inferred from ~claude-log-search-model~ if set, otherwise it falls back to ~gptel-backend~.
+The user option ~agent-log-search-backend~ specifies the =gptel= backend for stage 2 (selection and narrative).  When ~nil~ (the default), the backend is inferred from ~agent-log-search-model~ if set, otherwise it falls back to ~gptel-backend~.
 
-The user option ~claude-log-search-model~ specifies the model for stage 2.  This model receives all filtered session summaries and must reason over them, so a more capable model may produce better results.  When ~nil~ (the default), it uses ~gptel-model~.
+The user option ~agent-log-search-model~ specifies the model for stage 2.  This model receives all filtered session summaries and must reason over them, so a more capable model may produce better results.  When ~nil~ (the default), it uses ~gptel-model~.
 
-The user option ~claude-log-search-budget~ sets a per-request cost threshold as a =(TYPE . LIMIT)= cons cell, where =TYPE= is either ~tokens~ or ~dollars~.  Before stage 2 sends the filtered summaries to the LLM, the package estimates the prompt's token count (heuristically, one token per four characters).  If the estimate exceeds the limit, the user is asked to confirm with ~y-or-n-p~.  The default value is ~(tokens . 50000)~.
+The user option ~agent-log-search-budget~ sets a per-request cost threshold as a =(TYPE . LIMIT)= cons cell, where =TYPE= is either ~tokens~ or ~dollars~.  Before stage 2 sends the filtered summaries to the LLM, the package estimates the prompt's token count (heuristically, one token per four characters).  If the estimate exceeds the limit, the user is asked to confirm with ~y-or-n-p~.  The default value is ~(tokens . 50000)~.
 
 In ~dollars~ mode, cost estimation requires the =gptel-plus= package.  If =gptel-plus= is not available, the budget is not enforced and a warning is displayed.  Dollar estimates use the model's input pricing from =gptel-plus= to convert the estimated token count to a dollar amount.
 
@@ -223,38 +223,38 @@ In ~dollars~ mode, cost estimation requires the =gptel-plus= package.  If =gptel
 :CUSTOM_ID: h:session-browsing
 :END:
 
-#+findex: claude-log-browse-sessions
-#+findex: claude-log-open-latest
-#+findex: claude-log-open-file
-#+findex: claude-log-open-session
-#+findex: claude-log-open-session-at-point
+#+findex: agent-log-browse-sessions
+#+findex: agent-log-open-latest
+#+findex: agent-log-open-file
+#+findex: agent-log-open-session
+#+findex: agent-log-open-session-at-point
 
-The command ~claude-log-browse-sessions~ is the primary entry point for exploring your Claude Code history.  It reads =history.jsonl=, resolves each session to its JSONL file on disk, and presents the results in a ~completing-read~ prompt.  Each candidate is formatted as:
+The command ~agent-log-browse-sessions~ is the primary entry point for exploring your Claude Code history.  It reads =history.jsonl=, resolves each session to its JSONL file on disk, and presents the results in a ~completing-read~ prompt.  Each candidate is formatted as:
 
 #+begin_example
 2026-02-22 14:06  my-project  "Fix the authentication bug in..."
 #+end_example
 
-When ~claude-log-group-by-project~ is non-~nil~ (the default), the command first prompts for a project, then for a session within that project ([[#h:session-browser-options][Session browser options]]).  Sessions are sorted most-recent-first.  If AI summaries have been generated for any sessions ([[#h:summary-generation][Summary generation]]), the summary replaces the quoted first message in the candidate display.
+When ~agent-log-group-by-project~ is non-~nil~ (the default), the command first prompts for a project, then for a session within that project ([[#h:session-browser-options][Session browser options]]).  Sessions are sorted most-recent-first.  If AI summaries have been generated for any sessions ([[#h:summary-generation][Summary generation]]), the summary replaces the quoted first message in the candidate display.
 
-Selecting a session lazily renders it to a =.md= file if needed, then opens the rendered buffer in ~claude-log-mode~ ([[#h:claude-log-mode][~claude-log-mode~]]).
+Selecting a session lazily renders it to a =.md= file if needed, then opens the rendered buffer in ~agent-log-mode~ ([[#h:agent-log-mode][~agent-log-mode~]]).
 
-The command ~claude-log-open-latest~ opens the most recent session directly, without prompting.  This is convenient when you want to review the last conversation you had with Claude Code.
+The command ~agent-log-open-latest~ opens the most recent session directly, without prompting.  This is convenient when you want to review the last conversation you had with Claude Code.
 
-The command ~claude-log-open-file~ opens a specific JSONL file by path.  It prompts for a file path interactively.  This is useful for automation, for opening session files you found via the filesystem, or when you know the exact file you want.
+The command ~agent-log-open-file~ opens a specific JSONL file by path.  It prompts for a file path interactively.  This is useful for automation, for opening session files you found via the filesystem, or when you know the exact file you want.
 
-The command ~claude-log-open-session~ opens a session by its ID.  It prompts for the session ID interactively.
+The command ~agent-log-open-session~ opens a session by its ID.  It prompts for the session ID interactively.
 
-The command ~claude-log-open-session-at-point~ opens the log for the Claude Code session running in the current buffer.  The current buffer must be a Claude Code terminal buffer (from the =claude-code= package).  The command reads the status file that Claude Code writes to =/tmp/claude-code-status/= and uses the =transcript_path= field to locate the exact JSONL file for the session.  This uniquely identifies the session even when multiple sessions (including branches created with ~/branch~) share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching =history.jsonl=.  This lets you quickly jump from an active Claude Code session to its rendered log.
+The command ~agent-log-open-session-at-point~ opens the log for the Claude Code session running in the current buffer.  The current buffer must be a Claude Code terminal buffer (from the =claude-code= package).  The command reads the status file that Claude Code writes to =/tmp/claude-code-status/= and uses the =transcript_path= field to locate the exact JSONL file for the session.  This uniquely identifies the session even when multiple sessions (including branches created with ~/branch~) share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching =history.jsonl=.  This lets you quickly jump from an active Claude Code session to its rendered log.
 
 ** Rendered directory
 :PROPERTIES:
 :CUSTOM_ID: h:rendered-directory
 :END:
 
-#+findex: claude-log-open-rendered-directory
+#+findex: agent-log-open-rendered-directory
 
-The command ~claude-log-open-rendered-directory~ opens the rendered Markdown directory in Dired.  Since rendered files are plain Markdown organized by project, you can use standard Emacs tools to browse, search, and manage them.  For example, you can run =consult-ripgrep= from this Dired buffer to search across all rendered sessions.
+The command ~agent-log-open-rendered-directory~ opens the rendered Markdown directory in Dired.  Since rendered files are plain Markdown organized by project, you can use standard Emacs tools to browse, search, and manage them.  For example, you can run =consult-ripgrep= from this Dired buffer to search across all rendered sessions.
 
 If the rendered directory does not yet exist, the command creates it.
 
@@ -263,64 +263,64 @@ If the rendered directory does not yet exist, the command creates it.
 :CUSTOM_ID: h:sync-and-rendering
 :END:
 
-#+findex: claude-log-sync-all
-#+findex: claude-log-refresh
+#+findex: agent-log-sync-all
+#+findex: agent-log-refresh
 
-By default, rendering is lazy: sessions are rendered to =.md= files on first access via ~claude-log-browse-sessions~ or ~claude-log-open-file~.  The package maintains an index file (=_index.el=) in the rendered directory that maps session IDs to rendered file paths and JSONL file sizes.  When you access a session, the package compares the current JSONL file size against the indexed size; if they differ, the session is re-rendered.
+By default, rendering is lazy: sessions are rendered to =.md= files on first access via ~agent-log-browse-sessions~ or ~agent-log-open-file~.  The package maintains an index file (=_index.el=) in the rendered directory that maps session IDs to rendered file paths and JSONL file sizes.  When you access a session, the package compares the current JSONL file size against the indexed size; if they differ, the session is re-rendered.
 
-The command ~claude-log-sync-all~ renders all unrendered or stale sessions in bulk.  It processes sessions one at a time using ~run-with-timer~ to avoid blocking Emacs.  A progress message reports how many sessions were rendered.
+The command ~agent-log-sync-all~ renders all unrendered or stale sessions in bulk.  It processes sessions one at a time using ~run-with-timer~ to avoid blocking Emacs.  A progress message reports how many sessions were rendered.
 
-The command ~claude-log-refresh~ re-renders the session displayed in the current buffer from its JSONL source.  This is useful if the rendered file appears stale or if you have changed display settings such as ~claude-log-show-thinking~ or ~claude-log-show-tools~ ([[#h:display-of-thinking-and-tool-sections][Display of thinking and tool sections]]).  The keybinding is =g= in ~claude-log-mode~.
+The command ~agent-log-refresh~ re-renders the session displayed in the current buffer from its JSONL source.  This is useful if the rendered file appears stale or if you have changed display settings such as ~agent-log-show-thinking~ or ~agent-log-show-tools~ ([[#h:display-of-thinking-and-tool-sections][Display of thinking and tool sections]]).  The keybinding is =g= in ~agent-log-mode~.
 
 ** Navigation
 :PROPERTIES:
 :CUSTOM_ID: h:navigation
 :END:
 
-#+findex: claude-log-next-turn
-#+findex: claude-log-previous-turn
+#+findex: agent-log-next-turn
+#+findex: agent-log-previous-turn
 
-The command ~claude-log-next-turn~ moves point to the next User or Assistant heading in the buffer.  The command ~claude-log-previous-turn~ moves to the previous one.  These commands search for =## User= and =## Assistant= headings, skipping over tool calls and thinking sections.
+The command ~agent-log-next-turn~ moves point to the next User or Assistant heading in the buffer.  The command ~agent-log-previous-turn~ moves to the previous one.  These commands search for =## User= and =## Assistant= headings, skipping over tool calls and thinking sections.
 
-The keybindings are =n= and =p= in ~claude-log-mode~, making it easy to step through a conversation turn by turn.
+The keybindings are =n= and =p= in ~agent-log-mode~, making it easy to step through a conversation turn by turn.
 
 ** Section visibility
 :PROPERTIES:
 :CUSTOM_ID: h:section-visibility
 :END:
 
-#+findex: claude-log-toggle-section
-#+findex: claude-log-collapse-all-tools
-#+findex: claude-log-expand-all
+#+findex: agent-log-toggle-section
+#+findex: agent-log-collapse-all-tools
+#+findex: agent-log-expand-all
 
-The command ~claude-log-toggle-section~ toggles the visibility of the section at point.  When point is on a =####= heading (tool call, tool result, or thinking block), it collapses or expands just that section.  When point is on any other heading, it delegates to ~outline-toggle-children~.  The keybinding is =TAB=.
+The command ~agent-log-toggle-section~ toggles the visibility of the section at point.  When point is on a =####= heading (tool call, tool result, or thinking block), it collapses or expands just that section.  When point is on any other heading, it delegates to ~outline-toggle-children~.  The keybinding is =TAB=.
 
-The command ~claude-log-collapse-all-tools~ collapses all tool-use, tool-result, and thinking sections in the buffer at once.  This gives you a clean view of just the user messages and assistant text responses.  The keybinding is =C=.
+The command ~agent-log-collapse-all-tools~ collapses all tool-use, tool-result, and thinking sections in the buffer at once.  This gives you a clean view of just the user messages and assistant text responses.  The keybinding is =C=.
 
-The command ~claude-log-expand-all~ expands all sections, removing all section overlays and showing the full content.  The keybinding is =E=.
+The command ~agent-log-expand-all~ expands all sections, removing all section overlays and showing the full content.  The keybinding is =E=.
 
 ** Copying
 :PROPERTIES:
 :CUSTOM_ID: h:copying
 :END:
 
-#+findex: claude-log-copy-turn
+#+findex: agent-log-copy-turn
 
-The command ~claude-log-copy-turn~ copies the current turn to the kill ring.  A "turn" is delimited by =##= headings: from the current =## User= or =## Assistant= heading up to (but not including) the next one.  This is useful for extracting a specific message from a conversation to paste elsewhere.  The keybinding is =w=.
+The command ~agent-log-copy-turn~ copies the current turn to the kill ring.  A "turn" is delimited by =##= headings: from the current =## User= or =## Assistant= heading up to (but not including) the next one.  This is useful for extracting a specific message from a conversation to paste elsewhere.  The keybinding is =w=.
 
 ** Summary generation
 :PROPERTIES:
 :CUSTOM_ID: h:summary-generation
 :END:
 
-#+findex: claude-log-summarize-sessions
-#+findex: claude-log-stop-summarizing
+#+findex: agent-log-summarize-sessions
+#+findex: agent-log-stop-summarizing
 
-The command ~claude-log-summarize-sessions~ generates AI summaries for all sessions that do not yet have one.  It requires the =gptel= package.  The command processes sessions sequentially, sending each conversation's text to the configured LLM ([[#h:summary-generation-options][Summary generation options]]) and storing the response in the index.  Summary requests disable ~gptel-use-tools~ so that globally configured tools (e.g. MCP servers) are not included in the request.
+The command ~agent-log-summarize-sessions~ generates AI summaries for all sessions that do not yet have one.  It requires the =gptel= package.  The command processes sessions sequentially, sending each conversation's text to the configured LLM ([[#h:summary-generation-options][Summary generation options]]) and storing the response in the index.  Summary requests disable ~gptel-use-tools~ so that globally configured tools (e.g. MCP servers) are not included in the request.
 
 Each summary consists of two parts: a one-line summary (up to 80 characters) used in the session browser display, and a paragraph summary (3--5 sentences) shown at the top of rendered buffers.  The LLM is instructed to return a JSON object with ~oneline~ and ~summary~ fields.
 
-Progress is displayed in the echo area, showing which session is being summarized and the model in use.  If you invoke ~claude-log-summarize-sessions~ while summarization is already running, it stops the current run instead.  You can also stop explicitly with ~claude-log-stop-summarizing~.
+Progress is displayed in the echo area, showing which session is being summarized and the model in use.  If you invoke ~agent-log-summarize-sessions~ while summarization is already running, it stops the current run instead.  You can also stop explicitly with ~agent-log-stop-summarizing~.
 
 Summaries are persisted in the index file, so they survive across Emacs sessions and do not need to be regenerated.  When you open a session that has a summary, the paragraph summary is inserted as a blockquote below the session header.
 
@@ -329,9 +329,9 @@ Summaries are persisted in the index file, so they survive across Emacs sessions
 :CUSTOM_ID: h:auto-summarize-on-session-end
 :END:
 
-#+vindex: claude-log-sync-on-session-end
+#+vindex: agent-log-sync-on-session-end
 
-When ~claude-log-sync-on-session-end~ is non-nil, ~claude-log-sync-all~ and ~claude-log-summarize-sessions~ run automatically each time a Claude Code session terminates.  This requires the =claude-code= package and a =Stop= hook configured in Claude Code's settings (see the =claude-code= documentation for hook setup).
+When ~agent-log-sync-on-session-end~ is non-nil, ~agent-log-sync-all~ and ~agent-log-summarize-sessions~ run automatically each time a Claude Code session terminates.  This requires the =claude-code= package and a =Stop= hook configured in Claude Code's settings (see the =claude-code= documentation for hook setup).
 
 Sessions with a live Claude Code process are excluded from summarization by session ID (via =claude-code-extras=), so in-progress conversations are never summarized prematurely.  If summarization is already running when another session ends, the in-progress batch continues undisturbed.
 
@@ -340,18 +340,18 @@ Sessions with a live Claude Code process are excluded from summarization by sess
 :CUSTOM_ID: h:session-rename
 :END:
 
-#+findex: claude-log-rename-sessions
-#+vindex: claude-log-auto-rename-sessions
+#+findex: agent-log-rename-sessions
+#+vindex: agent-log-auto-rename-sessions
 
-The user option ~claude-log-auto-rename-sessions~ controls whether sessions are renamed automatically when they receive an AI summary.  When set to non-~nil~, each time ~claude-log-summarize-sessions~ successfully generates a summary for a session, the one-line summary is slugified and written as a =custom-title= entry in the session JSONL file.  This makes the name immediately visible in Claude Code's =/resume= picker without any manual step.
+The user option ~agent-log-auto-rename-sessions~ controls whether sessions are renamed automatically when they receive an AI summary.  When set to non-~nil~, each time ~agent-log-summarize-sessions~ successfully generates a summary for a session, the one-line summary is slugified and written as a =custom-title= entry in the session JSONL file.  This makes the name immediately visible in Claude Code's =/resume= picker without any manual step.
 
 The default value is ~nil~.  Set it to ~t~ if you want session names to stay in sync with summaries automatically.
 
-The command ~claude-log-rename-sessions~ renames all sessions that lack a custom title.  For each session that has a one-line summary in the index but no =custom-title= entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (=C-u=), it overwrites existing custom titles as well, which is useful after changing the title format.
+The command ~agent-log-rename-sessions~ renames all sessions that lack a custom title.  For each session that has a one-line summary in the index but no =custom-title= entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (=C-u=), it overwrites existing custom titles as well, which is useful after changing the title format.
 
-This is a purely local, offline operation — no API calls are made.  Sessions must be summarized first via ~claude-log-summarize-sessions~ ([[#h:summary-generation][Summary generation]]).  Sessions that already have a custom title (e.g. from Claude Code's =/rename= command) are skipped.
+This is a purely local, offline operation — no API calls are made.  Sessions must be summarized first via ~agent-log-summarize-sessions~ ([[#h:summary-generation][Summary generation]]).  Sessions that already have a custom title (e.g. from Claude Code's =/rename= command) are skipped.
 
-After writing custom-title entries, the cached JSONL file sizes in the index are updated in a single bulk write so that ~claude-log-sync-all~ does not treat the modified files as stale and trigger unnecessary re-renders.
+After writing custom-title entries, the cached JSONL file sizes in the index are updated in a single bulk write so that ~agent-log-sync-all~ does not treat the modified files as stale and trigger unnecessary re-renders.
 
 The command reports how many sessions were renamed, how many were skipped, and how many lacked a summary.
 
@@ -360,42 +360,42 @@ The command reports how many sessions were renamed, how many were skipped, and h
 :CUSTOM_ID: h:ai-search
 :END:
 
-#+findex: claude-log-search
-#+findex: claude-log-search-follow-link
+#+findex: agent-log-search
+#+findex: agent-log-search-follow-link
 
-The command ~claude-log-search~ searches your session history using natural language.  It prompts for a query string (e.g., "how did I implement the caching layer?" or "conversations about authentication in my web app last month") and uses a two-stage LLM pipeline to find relevant sessions.
+The command ~agent-log-search~ searches your session history using natural language.  It prompts for a query string (e.g., "how did I implement the caching layer?" or "conversations about authentication in my web app last month") and uses a two-stage LLM pipeline to find relevant sessions.
 
-*Stage 1: scope narrowing.*  The query, along with a summary of the archive's metadata (project names with session counts, date range), is sent to a scope-narrowing model.  This model returns structured JSON specifying which projects and date range to include.  If the query does not mention a specific project or timeframe, all sessions are included.  The model and backend for this stage are configured via ~claude-log-search-scope-model~ and ~claude-log-search-scope-backend~ ([[#h:ai-search-options][AI search options]]).
+*Stage 1: scope narrowing.*  The query, along with a summary of the archive's metadata (project names with session counts, date range), is sent to a scope-narrowing model.  This model returns structured JSON specifying which projects and date range to include.  If the query does not mention a specific project or timeframe, all sessions are included.  The model and backend for this stage are configured via ~agent-log-search-scope-model~ and ~agent-log-search-scope-backend~ ([[#h:ai-search-options][AI search options]]).
 
-*Stage 2: selection and narrative.*  The filtered session summaries (one-line and paragraph, from ~claude-log-summarize-sessions~) are sent to a selection model along with the original query.  This model produces a Markdown narrative explaining which sessions are relevant and why, with inline links to specific sessions.  If more than 100 sessions pass the scope filter, only the 100 most recent are sent.  The model and backend for this stage are configured via ~claude-log-search-model~ and ~claude-log-search-backend~ ([[#h:ai-search-options][AI search options]]).
+*Stage 2: selection and narrative.*  The filtered session summaries (one-line and paragraph, from ~agent-log-summarize-sessions~) are sent to a selection model along with the original query.  This model produces a Markdown narrative explaining which sessions are relevant and why, with inline links to specific sessions.  If more than 100 sessions pass the scope filter, only the 100 most recent are sent.  The model and backend for this stage are configured via ~agent-log-search-model~ and ~agent-log-search-backend~ ([[#h:ai-search-options][AI search options]]).
 
-The result is displayed in a =*claude-log-search*= buffer in ~claude-log-search-mode~ ([[#h:claude-log-search-mode][~claude-log-search-mode~]]).  Session references in the narrative are rendered as clickable links.  Pressing =RET= or clicking on a link opens the corresponding rendered session log.
+The result is displayed in a =*agent-log-search*= buffer in ~agent-log-search-mode~ ([[#h:agent-log-search-mode][~agent-log-search-mode~]]).  Session references in the narrative are rendered as clickable links.  Pressing =RET= or clicking on a link opens the corresponding rendered session log.
 
-Before starting, the command checks for unsummarized sessions.  If any exist, it warns the user that those sessions will be excluded and asks for confirmation.  If no sessions have summaries at all, the command aborts with a message to run ~claude-log-summarize-sessions~ first ([[#h:summary-generation][Summary generation]]).
+Before starting, the command checks for unsummarized sessions.  If any exist, it warns the user that those sessions will be excluded and asks for confirmation.  If no sessions have summaries at all, the command aborts with a message to run ~agent-log-summarize-sessions~ first ([[#h:summary-generation][Summary generation]]).
 
-Before stage 2, the estimated token cost is compared against ~claude-log-search-budget~ ([[#h:ai-search-options][AI search options]]).  If the estimate exceeds the threshold, the user is asked to confirm.
+Before stage 2, the estimated token cost is compared against ~agent-log-search-budget~ ([[#h:ai-search-options][AI search options]]).  If the estimate exceeds the threshold, the user is asked to confirm.
 
 ** Session resumption
 :PROPERTIES:
 :CUSTOM_ID: h:session-resumption
 :END:
 
-#+findex: claude-log-resume-session
+#+findex: agent-log-resume-session
 
-The command ~claude-log-resume-session~ resumes the Claude Code session displayed in the current buffer.  It requires the =claude-code= package.  The command extracts the session ID from the buffer (either from the buffer-local variable or from the front-matter comment) and passes it to Claude Code with the =--resume= flag.
+The command ~agent-log-resume-session~ resumes the Claude Code session displayed in the current buffer.  It requires the =claude-code= package.  The command extracts the session ID from the buffer (either from the buffer-local variable or from the front-matter comment) and passes it to Claude Code with the =--resume= flag.
 
-If the session's project directory can be determined (from the buffer-local variable or from =history.jsonl=), Claude Code is started in that directory.  The keybinding is =r= in ~claude-log-mode~.
+If the session's project directory can be determined (from the buffer-local variable or from =history.jsonl=), Claude Code is started in that directory.  The keybinding is =r= in ~agent-log-mode~.
 
-* ~claude-log-mode~
+* ~agent-log-mode~
 :PROPERTIES:
-:CUSTOM_ID: h:claude-log-mode
+:CUSTOM_ID: h:agent-log-mode
 :END:
 
-#+findex: claude-log-mode
+#+findex: agent-log-mode
 
-~claude-log-mode~ is the major mode used for rendered session buffers.  It derives from ~markdown-view-mode~, inheriting Markdown fontification in a read-only buffer.  Buffers are never marked as modified, so =q= (~quit-window~) closes them without prompting to save.  The mode activates ~outline-minor-mode~ with a regexp that matches Markdown headings (=## =, =### =, =#### =), enabling section folding.
+~agent-log-mode~ is the major mode used for rendered session buffers.  It derives from ~markdown-view-mode~, inheriting Markdown fontification in a read-only buffer.  Buffers are never marked as modified, so =q= (~quit-window~) closes them without prompting to save.  The mode activates ~outline-minor-mode~ with a regexp that matches Markdown headings (=## =, =### =, =#### =), enabling section folding.
 
-Two invisibility specs are added: ~claude-log-collapsed~ (which shows the heading but hides the body) and ~claude-log-hidden~ (which hides both heading and body).  These are used by the section visibility commands ([[#h:section-visibility][Section visibility]]) and the display configuration options ([[#h:display-of-thinking-and-tool-sections][Display of thinking and tool sections]]).
+Two invisibility specs are added: ~agent-log-collapsed~ (which shows the heading but hides the body) and ~agent-log-hidden~ (which hides both heading and body).  These are used by the section visibility commands ([[#h:section-visibility][Section visibility]]) and the display configuration options ([[#h:display-of-thinking-and-tool-sections][Display of thinking and tool sections]]).
 
 When a buffer in this mode is killed, the file watcher is cleaned up and the index is updated with the final JSONL file size.
 
@@ -403,31 +403,31 @@ The full keymap is:
 
 | Key   | Command                           | Description                             |
 |-------+-----------------------------------+-----------------------------------------|
-| =n=   | ~claude-log-next-turn~            | Jump to the next User/Assistant heading |
-| =p=   | ~claude-log-previous-turn~        | Jump to the previous heading            |
-| =TAB= | ~claude-log-toggle-section~       | Toggle fold of section at point         |
-| =C=   | ~claude-log-collapse-all-tools~   | Collapse all tool/thinking sections     |
-| =E=   | ~claude-log-expand-all~           | Expand all sections                     |
-| =g=   | ~claude-log-refresh~              | Re-render the buffer from scratch       |
-| =w=   | ~claude-log-copy-turn~            | Copy the current turn to the kill ring  |
-| =r=   | ~claude-log-resume-session~       | Resume the session in Claude Code       |
-| =?=   | ~claude-log-menu~                 | Open the transient menu                 |
+| =n=   | ~agent-log-next-turn~            | Jump to the next User/Assistant heading |
+| =p=   | ~agent-log-previous-turn~        | Jump to the previous heading            |
+| =TAB= | ~agent-log-toggle-section~       | Toggle fold of section at point         |
+| =C=   | ~agent-log-collapse-all-tools~   | Collapse all tool/thinking sections     |
+| =E=   | ~agent-log-expand-all~           | Expand all sections                     |
+| =g=   | ~agent-log-refresh~              | Re-render the buffer from scratch       |
+| =w=   | ~agent-log-copy-turn~            | Copy the current turn to the kill ring  |
+| =r=   | ~agent-log-resume-session~       | Resume the session in Claude Code       |
+| =?=   | ~agent-log-menu~                 | Open the transient menu                 |
 | =q=   | ~quit-window~                     | Close the buffer                        |
 
-** ~claude-log-search-mode~
+** ~agent-log-search-mode~
 :PROPERTIES:
-:CUSTOM_ID: h:claude-log-search-mode
+:CUSTOM_ID: h:agent-log-search-mode
 :END:
 
-#+findex: claude-log-search-mode
+#+findex: agent-log-search-mode
 
-~claude-log-search-mode~ is the major mode used for the =*claude-log-search*= result buffer.  It derives from ~markdown-view-mode~, providing Markdown fontification in a read-only buffer.  Session references in the LLM's narrative are replaced with clickable links: pressing =RET= or clicking on them opens the corresponding rendered session log via ~claude-log-search-follow-link~.
+~agent-log-search-mode~ is the major mode used for the =*agent-log-search*= result buffer.  It derives from ~markdown-view-mode~, providing Markdown fontification in a read-only buffer.  Session references in the LLM's narrative are replaced with clickable links: pressing =RET= or clicking on them opens the corresponding rendered session log via ~agent-log-search-follow-link~.
 
 The keymap is minimal:
 
 | Key   | Command                           | Description                       |
 |-------+-----------------------------------+-----------------------------------|
-| =RET= | ~claude-log-search-follow-link~   | Open the session link at point    |
+| =RET= | ~agent-log-search-follow-link~   | Open the session link at point    |
 | =q=   | ~quit-window~                     | Close the buffer                  |
 
 ** Transient menu
@@ -435,11 +435,11 @@ The keymap is minimal:
 :CUSTOM_ID: h:transient-menu
 :END:
 
-#+findex: claude-log-menu
+#+findex: agent-log-menu
 
-The command ~claude-log-menu~ opens a transient menu that groups all ~claude-log~ commands into four columns: Open, Sync & AI, Navigate (shown only inside a ~claude-log-mode~ buffer), and Settings.  The keybinding is =?= in ~claude-log-mode~.  The menu is also available globally via its autoload, so you can bind it to a key of your choice outside of ~claude-log-mode~.
+The command ~agent-log-menu~ opens a transient menu that groups all ~agent-log~ commands into four columns: Open, Sync & AI, Navigate (shown only inside a ~agent-log-mode~ buffer), and Settings.  The keybinding is =?= in ~agent-log-mode~.  The menu is also available globally via its autoload, so you can bind it to a key of your choice outside of ~agent-log-mode~.
 
-The Open column includes ~claude-log-resume-session~ (bound to =r=), which resumes the session displayed in the current buffer in Claude Code.  The Sync & AI column includes the ~claude-log-search~ command, bound to =/=.
+The Open column includes ~agent-log-resume-session~ (bound to =r=), which resumes the session displayed in the current buffer in Claude Code.  The Sync & AI column includes the ~agent-log-search~ command, bound to =/=.
 
 The Settings column displays the current value of each option (e.g., ~collapsed~, ~on~, ~off~) highlighted with the ~transient-value~ face, matching the convention used by =magit= and other transient-based menus.  In the Navigate column, =G= refreshes the buffer; in the Settings column, =g= toggles grouping by project.
 
@@ -473,7 +473,7 @@ The rendered directory mirrors the project structure:
     2026-02-04_14-06_fix-the-authentication-bug.md
     2026-02-05_09-22_refactor-database-schema.md
   dotfiles/
-    2026-02-22_11-56_redesign-claude-log-package.md
+    2026-02-22_11-56_redesign-agent-log-package.md
   _index.el
 #+end_example
 
@@ -495,7 +495,7 @@ The session header (the =# Session: ...= line at the top of each rendered file) 
 :CUSTOM_ID: h:live-update-mechanism
 :END:
 
-When ~claude-log-live-update~ is non-~nil~ and a rendered buffer is open, the package registers a ~file-notify~ watcher on the source JSONL file.  When the file grows, the watcher reads only the new bytes (from the previously recorded offset to the new file size), handling incomplete UTF-8 sequences at chunk boundaries.  New complete lines are parsed and rendered incrementally, appended to both the buffer and the =.md= file on disk.
+When ~agent-log-live-update~ is non-~nil~ and a rendered buffer is open, the package registers a ~file-notify~ watcher on the source JSONL file.  When the file grows, the watcher reads only the new bytes (from the previously recorded offset to the new file size), handling incomplete UTF-8 sequences at chunk boundaries.  New complete lines are parsed and rendered incrementally, appended to both the buffer and the =.md= file on disk.
 
 * Troubleshooting
 :PROPERTIES:
@@ -507,21 +507,21 @@ When ~claude-log-live-update~ is non-~nil~ and a rendered buffer is open, the pa
 :CUSTOM_ID: h:no-sessions-found
 :END:
 
-Ensure that ~claude-log-directory~ points to the correct Claude Code configuration directory ([[#h:directory-configuration][Directory configuration]]).  The package reads =history.jsonl= in that directory and looks for session files under =projects/=.
+Ensure that ~agent-log-directory~ points to the correct Claude Code configuration directory ([[#h:directory-configuration][Directory configuration]]).  The package reads =history.jsonl= in that directory and looks for session files under =projects/=.
 
 ** Rendered files not updating
 :PROPERTIES:
 :CUSTOM_ID: h:rendered-files-not-updating
 :END:
 
-If a rendered file appears stale, press =g= (~claude-log-refresh~) in the buffer to force a full re-render ([[#h:sync-and-rendering][Sync and rendering]]).  You can also delete the index file (=_index.el= in the rendered directory) to force re-rendering of all sessions on next access.
+If a rendered file appears stale, press =g= (~agent-log-refresh~) in the buffer to force a full re-render ([[#h:sync-and-rendering][Sync and rendering]]).  You can also delete the index file (=_index.el= in the rendered directory) to force re-rendering of all sessions on next access.
 
 ** Live updates not working
 :PROPERTIES:
 :CUSTOM_ID: h:live-updates-not-working
 :END:
 
-Verify that ~claude-log-live-update~ is set to ~t~ ([[#h:live-updates][Live updates]]).  Live updates rely on ~file-notify~, which requires OS-level file watching support.  On some systems (e.g., remote filesystems via TRAMP), file notifications may not be available.
+Verify that ~agent-log-live-update~ is set to ~t~ ([[#h:live-updates][Live updates]]).  Live updates rely on ~file-notify~, which requires OS-level file watching support.  On some systems (e.g., remote filesystems via TRAMP), file notifications may not be available.
 
 * License
 :PROPERTIES:
