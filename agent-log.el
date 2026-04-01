@@ -175,6 +175,25 @@ Returns nil if KEY is not in `agent-log-backends'."
                 agent-log-active-backends)))
     (delq nil (mapcar #'agent-log--get-backend keys))))
 
+(defun agent-log--read-all-sessions ()
+  "Return sessions from the first active backend.
+In future versions, this will merge sessions from all active backends."
+  (when-let* ((backend (car (agent-log--active-backend-instances))))
+    (agent-log--read-sessions backend)))
+
+(defun agent-log--find-session-file-any (session-id)
+  "Try all active backends to find SESSION-ID, return file path or nil."
+  (cl-loop for backend in (agent-log--active-backend-instances)
+           thereis (agent-log--find-session-file backend session-id)))
+
+;;;;;; Forward declarations for agent-log-claude.el
+
+(declare-function agent-log-open-session-at-point "agent-log-claude")
+(declare-function agent-log-rename-sessions "agent-log-claude")
+(declare-function agent-log-claude--session-end-handler "agent-log-claude")
+(declare-function agent-log-claude--maybe-rename-session "agent-log-claude")
+(defvar claude-code-event-hook)
+
 (defcustom agent-log-directory "~/.claude"
   "Root directory of Claude Code configuration.
 This variable is used by the Claude Code backend.  In future
@@ -258,9 +277,16 @@ package and a \"Stop\" hook configured in Claude Code settings."
   :type 'boolean
   :set (lambda (sym val)
          (set-default sym val)
-         (if val
-             (add-hook 'claude-code-event-hook #'agent-log--session-end-handler)
-           (remove-hook 'claude-code-event-hook #'agent-log--session-end-handler))))
+         (if (featurep 'agent-log-claude)
+             (if val
+                 (add-hook 'claude-code-event-hook #'agent-log-claude--session-end-handler)
+               (remove-hook 'claude-code-event-hook #'agent-log-claude--session-end-handler))
+           ;; Defer until agent-log-claude is loaded.
+           (when val
+             (eval-after-load 'agent-log-claude
+               '(when agent-log-sync-on-session-end
+                  (add-hook 'claude-code-event-hook
+                            #'agent-log-claude--session-end-handler)))))))
 
 (defcustom agent-log-auto-rename-sessions nil
   "When non-nil, rename sessions automatically after summarization.
@@ -384,6 +410,10 @@ Used when following links in the result buffer.")
   "Cached index hash table for the current search.
 Used when following links in the result buffer.")
 
+(defun agent-log--default-backend ()
+  "Return the buffer-local backend, or the first active backend."
+  (or agent-log--backend (car (agent-log--active-backend-instances))))
+
 ;;;;; Entry points
 
 ;;;###autoload
@@ -392,7 +422,7 @@ Used when following links in the result buffer.")
 When `agent-log-group-by-project' is non-nil, first prompts for
 a project, then for a session within that project."
   (interactive)
-  (let ((sessions (agent-log--read-sessions)))
+  (let ((sessions (agent-log--read-all-sessions)))
     (if agent-log-group-by-project
         (agent-log--browse-grouped sessions)
       (agent-log--browse-flat sessions))))
@@ -402,6 +432,7 @@ a project, then for a session within that project."
   "Open and render the JSONL session log at FILE."
   (interactive "fJSONL file: ")
   (let* ((file (expand-file-name file))
+         (backend (agent-log--default-backend))
          (session-id (file-name-sans-extension (file-name-nondirectory file)))
          (entries (agent-log--parse-jsonl-file file))
          (first-msg (agent-log--find-first-message entries))
@@ -409,19 +440,22 @@ a project, then for a session within that project."
          (ts-iso (when first-msg (plist-get first-msg :timestamp)))
          (epoch-ms (when (stringp ts-iso)
                      (agent-log--iso-to-epoch-ms ts-iso)))
-         (display (or (agent-log--first-user-text entries) ""))
+         (display (or (and backend
+                           (agent-log--first-user-text backend entries))
+                      ""))
          (project (when progress (or (plist-get progress :cwd) "")))
          (metadata (list :file file
                          :timestamp epoch-ms
                          :project (or project "")
-                         :display display)))
+                         :display display
+                         :backend backend)))
     (agent-log--open-rendered session-id metadata)))
 
 ;;;###autoload
 (defun agent-log-open-latest ()
   "Open the most recent session."
   (interactive)
-  (let ((sessions (agent-log--read-sessions)))
+  (let ((sessions (agent-log--read-all-sessions)))
     (unless sessions
       (user-error "No sessions found"))
     (let* ((latest (car sessions))
@@ -442,7 +476,7 @@ a project, then for a session within that project."
 (defun agent-log-open-session (session-id)
   "Open the session with SESSION-ID."
   (interactive "sSession ID: ")
-  (let ((file (agent-log--find-session-file session-id)))
+  (let ((file (agent-log--find-session-file-any session-id)))
     (unless file
       (user-error "No JSONL file found for session %s" session-id))
     (agent-log-open-file file)))
@@ -453,7 +487,7 @@ a project, then for a session within that project."
 Uses timers to avoid blocking Emacs.  When CALLBACK is non-nil,
 call it with no arguments after the last session is rendered."
   (interactive)
-  (let* ((sessions (agent-log--read-sessions))
+  (let* ((sessions (agent-log--read-all-sessions))
          (index (agent-log--read-index))
          (pending (agent-log--pending-sessions sessions index)))
     (if (null pending)
@@ -607,25 +641,6 @@ METADATA is a plist with :timestamp, :project, :display."
          (filename (format "%s_%s.md" date-str slug)))
     (expand-file-name filename project-dir)))
 
-(defun agent-log--first-user-text (entries)
-  "Return the text of the first user message in ENTRIES."
-  (when-let* ((first-user (seq-find
-                           (lambda (e)
-                             (and (equal (plist-get e :type) "user")
-                                  (not (agent-log--system-entry-p e))))
-                           entries))
-              (message (plist-get first-user :message))
-              (content (plist-get message :content)))
-    (cond
-     ((stringp content) content)
-     ((listp content)
-      (when-let* ((text-item (seq-find
-                              (lambda (i)
-                                (equal (plist-get i :type) "text"))
-                              content)))
-        (plist-get text-item :text)))
-     (t nil))))
-
 (defun agent-log--iso-to-epoch-ms (ts)
   "Convert ISO 8601 timestamp TS to epoch milliseconds."
   (condition-case nil
@@ -665,8 +680,12 @@ METADATA is a plist with :file, :timestamp, :project, :display.
 If OUTPUT-PATH is given, write there; otherwise compute from METADATA.
 Returns (RENDERED-PATH . JSONL-SIZE)."
   (let* ((jsonl-file (plist-get metadata :file))
+         (backend (or (plist-get metadata :backend)
+                      (agent-log--default-backend)))
          (entries (agent-log--parse-jsonl-file jsonl-file))
-         (conversation (agent-log--filter-conversation entries))
+         (conversation (if backend
+                           (agent-log--filter-conversation backend entries)
+                         entries))
          (rendered-path (or output-path
                             (agent-log--rendered-filepath session-id metadata)))
          (jsonl-size (file-attribute-size (file-attributes jsonl-file)))
@@ -684,7 +703,7 @@ Returns (RENDERED-PATH . JSONL-SIZE)."
                         project
                         (plist-get session-meta :date))))
       (dolist (entry conversation)
-        (insert (agent-log--render-entry entry))))
+        (insert (agent-log--render-entry entry backend))))
     (cons rendered-path jsonl-size)))
 
 (defun agent-log--ensure-rendered (session-id metadata)
@@ -717,7 +736,9 @@ METADATA is a plist with :file, :timestamp, :project, :display."
       (setq agent-log--source-file (plist-get metadata :file)
             agent-log--session-id session-id
             agent-log--rendered-file rendered-path
-            agent-log--session-project (plist-get metadata :project))
+            agent-log--session-project (plist-get metadata :project)
+            agent-log--backend (or (plist-get metadata :backend)
+                                   (agent-log--default-backend)))
       (agent-log--record-offset)
       (when (and agent-log-live-update (not agent-log--watcher))
         (agent-log--start-watcher))
@@ -732,81 +753,6 @@ METADATA is a plist with :file, :timestamp, :project, :display."
   (write-region text nil file t 'quiet))
 
 ;;;;; Session browser
-
-(defun agent-log--read-sessions ()
-  "Parse `history.jsonl' and return alist of session-id to metadata.
-Each value is a plist (:display :timestamp :project :file :file-dir).
-The :project field reflects the most recent CWD among sessions
-sharing the same file directory, so it stays correct after project
-renames or profile migrations."
-  (let ((history-file (expand-file-name "history.jsonl" agent-log-directory))
-        (sessions (make-hash-table :test #'equal))
-        (file-index (agent-log--build-session-file-index)))
-    (unless (file-exists-p history-file)
-      (user-error "History file not found: %s" history-file))
-    (dolist (entry (agent-log--parse-jsonl-file history-file))
-      (let ((sid (plist-get entry :sessionId)))
-        (when sid
-          (puthash sid entry sessions))))
-    ;; For each file directory, find the most recent CWD.
-    (let ((dir-best-project (make-hash-table :test #'equal)))
-      (maphash
-       (lambda (sid entry)
-         (when-let* ((file (gethash sid file-index))
-                     (dir (file-name-directory file))
-                     (proj (plist-get entry :project))
-                     (ts (plist-get entry :timestamp)))
-           (let ((existing (gethash dir dir-best-project)))
-             (when (or (null existing)
-                       (agent-log--timestamp> ts (car existing)))
-               (puthash dir (cons ts proj) dir-best-project)))))
-       sessions)
-      (let (result)
-        (maphash
-         (lambda (sid entry)
-           (when-let* ((file (gethash sid file-index)))
-             (let* ((dir (file-name-directory file))
-                    (best (gethash dir dir-best-project))
-                    (project (if best (cdr best)
-                               (or (plist-get entry :project) ""))))
-               (push (list sid
-                           :display (or (plist-get entry :display) "")
-                           :timestamp (plist-get entry :timestamp)
-                           :project project
-                           :file-dir dir
-                           :file file)
-                     result))))
-         sessions)
-        (sort result (lambda (a b)
-                       (agent-log--timestamp>
-                        (plist-get (cdr a) :timestamp)
-                        (plist-get (cdr b) :timestamp))))))))
-
-(defun agent-log--build-session-file-index ()
-  "Build a hash table mapping session-id to JSONL file path.
-Scans the projects directory once, which is much faster than
-probing per session."
-  (let ((index (make-hash-table :test #'equal))
-        (projects-dir (expand-file-name "projects" agent-log-directory)))
-    (when (file-directory-p projects-dir)
-      (dolist (dir (directory-files projects-dir t "^[^.]"))
-        (when (file-directory-p dir)
-          (dolist (file (directory-files dir t "\\.jsonl\\'"))
-            (let ((sid (file-name-sans-extension
-                        (file-name-nondirectory file))))
-              (puthash sid file index))))))
-    index))
-
-(defun agent-log--find-session-file (session-id)
-  "Find the JSONL file for SESSION-ID under the projects directory."
-  (let ((projects-dir (expand-file-name "projects" agent-log-directory)))
-    (when (file-directory-p projects-dir)
-      (cl-block nil
-        (dolist (dir (directory-files projects-dir t "^[^.]"))
-          (when (file-directory-p dir)
-            (let ((file (expand-file-name (concat session-id ".jsonl") dir)))
-              (when (file-exists-p file)
-                (cl-return file)))))))))
 
 (defun agent-log--browse-flat (sessions)
   "Present all SESSIONS in a single `completing-read'."
@@ -966,36 +912,6 @@ Malformed lines are silently skipped."
   "Parse a single JSON LINE into a plist."
   (json-parse-string line :object-type 'plist :array-type 'list))
 
-(defun agent-log--filter-conversation (entries)
-  "Filter ENTRIES to user and assistant messages, excluding system entries."
-  (seq-filter #'agent-log--conversation-entry-p entries))
-
-(defun agent-log--conversation-entry-p (entry)
-  "Return non-nil if ENTRY is a genuine conversation message."
-  (let ((type (plist-get entry :type)))
-    (and (member type '("user" "assistant"))
-         (not (agent-log--system-entry-p entry)))))
-
-(defconst agent-log--system-tag-regexp
-  (rx bos (0+ space) "<"
-      (or "local-command-caveat"
-          "local-command-stdout"
-          "local-command-stderr"
-          "command-name"
-          "command-message"
-          "task-notification"
-          "teammate-message")
-      (or ">" " "))
-  "Regexp matching system-generated XML tags in user entries.")
-
-(defun agent-log--system-entry-p (entry)
-  "Return non-nil if ENTRY is a system-generated message.
-These are user-role entries whose string content starts with a
-known system XML tag."
-  (let* ((content (plist-get (plist-get entry :message) :content)))
-    (and (stringp content)
-         (string-match-p agent-log--system-tag-regexp content))))
-
 ;;;;; Entry helpers
 
 (defun agent-log--find-first-message (entries)
@@ -1012,27 +928,21 @@ known system XML tag."
 
 (defun agent-log--render-full ()
   "Render the full JSONL file into the current buffer."
-  (let* ((entries (agent-log--parse-jsonl-file agent-log--source-file))
-         (conversation (agent-log--filter-conversation entries)))
-    (agent-log--extract-session-metadata entries)
+  (let* ((backend agent-log--backend)
+         (entries (agent-log--parse-jsonl-file agent-log--source-file))
+         (conversation (if backend
+                           (agent-log--filter-conversation backend entries)
+                         entries)))
+    (when backend
+      (agent-log--extract-session-metadata backend entries))
     (let ((inhibit-read-only t))
       (erase-buffer)
       (insert (agent-log--render-header))
       (dolist (entry conversation)
-        (insert (agent-log--render-entry entry)))
+        (insert (agent-log--render-entry entry backend)))
       (agent-log--record-offset)
       (goto-char (point-min))
       (agent-log--collapse-as-configured))))
-
-(defun agent-log--extract-session-metadata (entries)
-  "Extract project and date from ENTRIES."
-  (when-let* ((first-msg (agent-log--find-first-message entries)))
-    (setq agent-log--session-date
-          (agent-log--format-iso-timestamp (plist-get first-msg :timestamp))))
-  (when-let* ((progress (agent-log--find-progress-entry entries))
-              (cwd (plist-get progress :cwd))
-              ((not (string-empty-p cwd))))
-    (setq agent-log--session-project cwd)))
 
 (defun agent-log--render-header ()
   "Return the Markdown header for the session."
@@ -1041,8 +951,9 @@ known system XML tag."
         (date (or agent-log--session-date "unknown")))
     (format "# Session: %s — %s\n\n" project date)))
 
-(defun agent-log--render-entry (entry)
-  "Render a single conversation ENTRY to a Markdown string."
+(defun agent-log--render-entry (entry &optional backend)
+  "Render a single conversation ENTRY to a Markdown string.
+BACKEND is passed through to tool-use rendering for dispatch."
   (let ((message (plist-get entry :message)))
     (if (not message)
         ""
@@ -1054,7 +965,7 @@ known system XML tag."
          ((equal role "user")
           (agent-log--render-user-turn content time-str))
          ((equal role "assistant")
-          (agent-log--render-assistant-turn content time-str))
+          (agent-log--render-assistant-turn content time-str backend))
          (t ""))))))
 
 (defun agent-log--render-user-turn (content time-str)
@@ -1094,16 +1005,18 @@ Returns a list of formatted strings, or nil if there are none."
         (push (agent-log--render-tool-result item) parts)))
     (nreverse parts)))
 
-(defun agent-log--render-assistant-turn (content time-str)
+(defun agent-log--render-assistant-turn (content time-str &optional backend)
   "Render an assistant turn with CONTENT and TIME-STR.
+BACKEND is passed through for tool-use dispatch.
 Returns an empty string if CONTENT produces no visible output."
-  (let ((body (agent-log--render-assistant-body content)))
+  (let ((body (agent-log--render-assistant-body content backend)))
     (if (string-empty-p body)
         ""
       (concat (format "---\n\n## Assistant — %s\n\n" time-str) body))))
 
-(defun agent-log--render-assistant-body (content)
-  "Render the body of an assistant turn from CONTENT items."
+(defun agent-log--render-assistant-body (content &optional backend)
+  "Render the body of an assistant turn from CONTENT items.
+BACKEND is passed through for tool-use dispatch."
   (let ((parts '()))
     (when (listp content)
       (dolist (item content)
@@ -1116,7 +1029,7 @@ Returns an empty string if CONTENT produces no visible output."
               (when (and text (not (string-empty-p (string-trim text))))
                 (push (format "%s\n\n" text) parts))))
            ((equal item-type "tool_use")
-            (push (agent-log--render-tool-use item) parts))))))
+            (push (agent-log--render-tool-use item backend) parts))))))
     (apply #'concat (nreverse parts))))
 
 (defun agent-log--render-thinking (item)
@@ -1126,11 +1039,12 @@ Returns an empty string if CONTENT produces no visible output."
          (clean (replace-regexp-in-string "\n\n+" "\n" truncated)))
     (format "#### Thinking\n\n%s\n\n" clean)))
 
-(defun agent-log--render-tool-use (item)
-  "Render a tool_use ITEM with a smart summary of its input."
+(defun agent-log--render-tool-use (item &optional backend)
+  "Render a tool_use ITEM with a smart summary of its input.
+BACKEND is used for backend-specific tool summarization."
   (let* ((name (plist-get item :name))
          (input (plist-get item :input))
-         (summary (agent-log--summarize-tool-input name input)))
+         (summary (agent-log--summarize-tool-input name input backend)))
     (format "#### Tool: %s\n\n%s\n\n" name summary)))
 
 (defun agent-log--render-tool-result (item)
@@ -1157,68 +1071,16 @@ Returns an empty string if CONTENT produces no visible output."
 
 ;;;;; Tool input summaries
 
-(defun agent-log--summarize-tool-input (name input)
-  "Return a concise summary of INPUT for tool NAME."
-  (let ((summary (agent-log--summarize-tool-input-by-name name input)))
+(defun agent-log--summarize-tool-input (name input &optional backend)
+  "Return a concise summary of INPUT for tool NAME.
+When BACKEND is non-nil, dispatch to the backend-specific summarizer."
+  (let* ((backend (or backend agent-log--backend))
+         (summary (if backend
+                      (agent-log--summarize-tool-input-by-name backend name input)
+                    "")))
     (if (string-empty-p summary)
         (agent-log--summarize-tool-input-generic input)
       summary)))
-
-(defun agent-log--summarize-tool-input-by-name (name input)
-  "Return a summary of tool INPUT specific to tool NAME."
-  (pcase name
-    ((or "Read" "Write")
-     (format "> **file_path**: %s" (or (plist-get input :file_path) "?")))
-    ("Edit" (agent-log--summarize-edit input))
-    ("Bash" (agent-log--summarize-bash input))
-    ("Grep" (agent-log--summarize-grep input))
-    ("Glob" (agent-log--summarize-glob input))
-    ("WebFetch" (agent-log--summarize-web-fetch input))
-    ("WebSearch" (agent-log--summarize-web-search input))
-    ("Task" (agent-log--summarize-task input))
-    (_ "")))
-
-(defun agent-log--summarize-edit (input)
-  "Summarize Edit tool INPUT."
-  (let ((file (or (plist-get input :file_path) "?"))
-        (old (agent-log--truncate-string
-              (or (plist-get input :old_string) "")
-              agent-log-max-tool-input-length)))
-    (format "> **file_path**: %s\n> **old_string**: `%s`" file old)))
-
-(defun agent-log--summarize-bash (input)
-  "Summarize Bash tool INPUT."
-  (let ((cmd (agent-log--truncate-string
-              (or (plist-get input :command) "") agent-log-max-tool-input-length)))
-    (format "> ```\n> %s\n> ```" cmd)))
-
-(defun agent-log--summarize-grep (input)
-  "Summarize Grep tool INPUT."
-  (let ((pattern (or (plist-get input :pattern) "?"))
-        (path (or (plist-get input :path) "")))
-    (if (string-empty-p path)
-        (format "> **pattern**: `%s`" pattern)
-      (format "> **pattern**: `%s` in %s" pattern path))))
-
-(defun agent-log--summarize-glob (input)
-  "Summarize Glob tool INPUT."
-  (format "> **pattern**: `%s`" (or (plist-get input :pattern) "?")))
-
-(defun agent-log--summarize-web-fetch (input)
-  "Summarize WebFetch tool INPUT."
-  (format "> **url**: %s" (or (plist-get input :url) "?")))
-
-(defun agent-log--summarize-web-search (input)
-  "Summarize WebSearch tool INPUT."
-  (format "> **query**: %s" (or (plist-get input :query) "?")))
-
-(defun agent-log--summarize-task (input)
-  "Summarize Task tool INPUT."
-  (let ((desc (or (plist-get input :description) ""))
-        (type (or (plist-get input :subagent_type) "")))
-    (if (string-empty-p type)
-        (format "> %s" desc)
-      (format "> **%s**: %s" type desc))))
 
 (defun agent-log--summarize-tool-input-generic (input)
   "Return a generic summary of tool INPUT plist.
@@ -1431,9 +1293,10 @@ If AT-END is non-nil, scroll to show new content."
 (defun agent-log--append-rendered-line (line)
   "Parse LINE as JSON and append its rendering if it is a conversation entry.
 Appends to both the buffer and the rendered .md file on disk."
-  (when-let* ((entry (agent-log--try-parse-json line)))
-    (when (agent-log--conversation-entry-p entry)
-      (let ((rendered (agent-log--render-entry entry))
+  (when-let* ((entry (agent-log--try-parse-json line))
+              (backend agent-log--backend))
+    (when (agent-log--conversation-entry-p backend entry)
+      (let ((rendered (agent-log--render-entry entry backend))
             (inhibit-read-only t))
         (when agent-log--rendered-file
           (agent-log--append-to-file agent-log--rendered-file rendered))
@@ -1717,34 +1580,26 @@ inferring the backend from the model when needed."
                    (t gptel-backend))))
     (cons backend model)))
 
-(defun agent-log--extract-message-text (content)
-  "Extract plain text from message CONTENT.
-Tool-use and thinking blocks are ignored."
-  (cond
-   ((stringp content) content)
-   ((listp content)
-    (let ((texts '()))
-      (dolist (item content)
-        (when (equal (plist-get item :type) "text")
-          (let ((text (plist-get item :text)))
-            (when (and text (not (string-empty-p (string-trim text))))
-              (push text texts)))))
-      (string-join (nreverse texts) "\n")))
-   (t "")))
-
-(defun agent-log--extract-conversation-text (entries)
+(defun agent-log--extract-conversation-text (entries &optional backend)
   "Extract a condensed text representation of ENTRIES for summarization.
+BACKEND is used for filtering and text extraction.
 Returns a string with user and assistant messages, truncated to
 `agent-log-summary-max-content-length'."
-  (let ((parts '())
-        (total 0)
-        (max-len agent-log-summary-max-content-length))
-    (dolist (entry (agent-log--filter-conversation entries))
+  (let* ((backend (or backend (agent-log--default-backend)))
+         (conversation (if backend
+                           (agent-log--filter-conversation backend entries)
+                         entries))
+         (parts '())
+         (total 0)
+         (max-len agent-log-summary-max-content-length))
+    (dolist (entry conversation)
       (when (< total max-len)
         (let* ((message (plist-get entry :message))
                (role (plist-get message :role))
                (content (plist-get message :content))
-               (text (agent-log--extract-message-text content))
+               (text (if backend
+                         (agent-log--extract-message-text backend content)
+                       ""))
                (prefix (if (equal role "user") "User: " "Assistant: "))
                (line (concat prefix text "\n\n")))
           (when (and text (not (string-empty-p (string-trim text))))
@@ -1778,29 +1633,11 @@ Returns (SUMMARY . ONELINE) or nil."
           (cons summary oneline)))
     (error nil)))
 
-(defvar-local claude-code-extras--status-data nil)
-
-(defun agent-log--active-session-ids ()
-  "Return a list of session IDs for live Claude Code sessions.
-Requires `claude-code' and `claude-code-extras' for session ID
-extraction.  Returns nil if either is unavailable."
-  (when (require 'claude-code nil t)
-    (let (ids)
-      (dolist (buf (buffer-list))
-        (when (and (buffer-live-p buf)
-                   (claude-code--buffer-p buf)
-                   (when-let* ((proc (get-buffer-process buf)))
-                     (process-live-p proc)))
-          (when-let* ((data (buffer-local-value
-                             'claude-code-extras--status-data buf))
-                      (sid (plist-get data :session_id)))
-            (push sid ids))))
-      (delete-dups ids))))
-
 (defun agent-log--sessions-needing-summary (sessions index)
   "Return sessions from SESSIONS that lack a summary in INDEX.
-Sessions with a live Claude Code process are excluded by session ID."
-  (let ((active-ids (agent-log--active-session-ids)))
+Sessions with a live agent process are excluded by session ID."
+  (let ((active-ids (cl-loop for backend in (agent-log--active-backend-instances)
+                             append (agent-log--active-session-ids backend))))
     (seq-filter
      (lambda (session)
        (let* ((sid (car session))
@@ -1820,7 +1657,7 @@ If summary generation is already in progress, stop it instead."
    (agent-log--summarize-active
     (agent-log-stop-summarizing))
    (t
-    (let* ((sessions (agent-log--read-sessions))
+    (let* ((sessions (agent-log--read-all-sessions))
            (index (agent-log--read-index))
            (pending (agent-log--sessions-needing-summary sessions index)))
       (if (null pending)
@@ -1944,7 +1781,8 @@ an error (nil) consumes the request guard and advances the chain."
                  sid (list :summary (car parsed)
                            :summary-oneline (cdr parsed)))
                 (when agent-log-auto-rename-sessions
-                  (agent-log--maybe-rename-session sid (cdr parsed))))
+                  (when (require 'agent-log-claude nil t)
+                    (agent-log-claude--maybe-rename-session sid (cdr parsed)))))
             (message "Failed to parse summary for %s" sid)))
         ;; Brief delay before the next request to avoid hammering the
         ;; LLM API and to let the event loop process pending I/O.
@@ -2077,7 +1915,8 @@ Returns a plist with:
   :summarized    - count of sessions with summaries
   :unsummarized  - count of sessions without summaries"
   (let ((project-counts (make-hash-table :test #'equal))
-        (active-ids (agent-log--active-session-ids))
+        (active-ids (cl-loop for backend in (agent-log--active-backend-instances)
+                             append (agent-log--active-session-ids backend)))
         (earliest nil)
         (latest nil)
         (summarized 0)
@@ -2394,7 +2233,7 @@ clickable links to the matching logs."
   (interactive "sSearch logs: ")
   (unless (require 'gptel nil t)
     (user-error "Package `gptel' is required for AI search"))
-  (let* ((sessions (agent-log--read-sessions))
+  (let* ((sessions (agent-log--read-all-sessions))
          (index (agent-log--read-index))
          (metadata (agent-log--search-gather-metadata sessions index))
          (unsummarized (plist-get metadata :unsummarized))
@@ -2439,113 +2278,7 @@ full session list and index for filtering."
             (setq filtered (seq-take filtered 100)))
           (agent-log--search-send-selection query filtered index))))))
 
-;;;;; Session rename
-
-(defun agent-log--session-has-custom-title-p (jsonl-file)
-  "Return non-nil if JSONL-FILE already has a custom-title entry."
-  (with-temp-buffer
-    (insert-file-contents jsonl-file)
-    (goto-char (point-min))
-    (re-search-forward "\"type\"\\s-*:\\s-*\"custom-title\"" nil t)))
-
-(defun agent-log--append-custom-title (jsonl-file session-id title &optional index)
-  "Append a custom-title entry to JSONL-FILE for SESSION-ID with TITLE.
-Also updates the cached JSONL size so that `agent-log--ensure-rendered'
-does not treat the file as stale.  When INDEX is non-nil, merge the
-new size into it (for batch operations); otherwise write to disk."
-  (let ((entry (json-serialize
-                (list :type "custom-title"
-                      :customTitle title
-                      :sessionId session-id))))
-    (write-region (concat entry "\n") nil jsonl-file t 'quiet)
-    (when-let* ((new-size (file-attribute-size (file-attributes jsonl-file))))
-      (if index
-          (agent-log--index-merge index session-id (list :jsonl-size new-size))
-        (agent-log--index-update-props
-         session-id (list :jsonl-size new-size))))))
-
-(defun agent-log--maybe-rename-session (session-id oneline)
-  "Rename SESSION-ID from ONELINE summary if appropriate.
-Finds the session JSONL file, checks it has no custom-title yet,
-and writes ONELINE as the title.  Does nothing if ONELINE is nil,
-empty, or the sentinel value."
-  (when (and oneline
-             (not (string-empty-p oneline))
-             (not (equal oneline agent-log--no-conversation-sentinel)))
-    (when-let* ((jsonl-file (agent-log--find-session-file session-id)))
-      (unless (agent-log--session-has-custom-title-p jsonl-file)
-        (agent-log--append-custom-title
-         jsonl-file session-id oneline)))))
-
-;;;###autoload
-(defun agent-log-rename-sessions (&optional force)
-  "Rename sessions using their AI summaries.
-For each session that has a summary in the index but no
-custom-title in its JSONL file, write the summary as a
-custom-title entry.  This makes the name visible in Claude
-Code's /resume picker.
-
-With prefix argument FORCE, overwrite existing custom titles.
-This is useful after changing the title format (e.g. from
-slugified to full-text titles).
-
-Sessions must be summarized first via `agent-log-summarize-sessions'."
-  (interactive "P")
-  (let* ((sessions (agent-log--read-sessions))
-         (index (agent-log--read-index))
-         (renamed 0)
-         (skipped 0)
-         (no-summary 0))
-    (dolist (session sessions)
-      (let* ((sid (car session))
-             (metadata (cdr session))
-             (jsonl-file (plist-get metadata :file))
-             (entry (gethash sid index))
-             (oneline (when entry (plist-get entry :summary-oneline))))
-        (cond
-         ((or (null oneline)
-              (string-empty-p oneline)
-              (equal oneline agent-log--no-conversation-sentinel))
-          (cl-incf no-summary))
-         ((not (file-exists-p jsonl-file))
-          (cl-incf skipped))
-         ((and (not force)
-               (agent-log--session-has-custom-title-p jsonl-file))
-          (cl-incf skipped))
-         (t
-          (agent-log--append-custom-title jsonl-file sid oneline index)
-          (cl-incf renamed)))))
-    (when (> renamed 0)
-      (agent-log--write-index index))
-    (message "Renamed %d session(s), skipped %d (already named), %d without summary"
-             renamed skipped no-summary)))
-
-;;;;; Session lifecycle integration
-
-(defvar claude-code-event-hook)
-
-(defun agent-log--session-end-handler (message)
-  "Handle a Claude Code event MESSAGE, triggering sync on session end.
-Intended for use in `claude-code-event-hook'.  Runs `agent-log-sync-all'
-followed by `agent-log-summarize-sessions' when `:type' is \"Stop\"."
-  (when (eq (plist-get message :type) 'stop)
-    ;; Delay briefly to let the JSONL file finish writing.
-    (run-with-timer
-     1 nil
-     (lambda ()
-       (agent-log-sync-all
-        (lambda ()
-          (when (and (require 'gptel nil t)
-                     (not agent-log--summarize-active))
-            (agent-log-summarize-sessions))))))
-    nil))
-
 ;;;;; Resume session
-
-(declare-function claude-code--start "claude-code")
-(declare-function claude-code--directory "claude-code")
-(declare-function claude-code--buffer-p "claude-code")
-(declare-function claude-code--extract-directory-from-buffer-name "claude-code")
 
 (defun agent-log--extract-session-id-from-buffer ()
   "Extract session ID from the front-matter comment of the current buffer."
@@ -2554,164 +2287,16 @@ followed by `agent-log-summarize-sessions' when `:type' is \"Stop\"."
     (when (re-search-forward "<!-- session: \\([^ ]+\\) -->" nil t)
       (match-string 1))))
 
-(defun agent-log--lookup-session-project (session-id)
-  "Look up the project directory for SESSION-ID in history.jsonl."
-  (let ((history-file (expand-file-name "history.jsonl" agent-log-directory)))
-    (when (file-exists-p history-file)
-      (catch 'found
-        (dolist (entry (agent-log--parse-jsonl-file history-file))
-          (when (equal (plist-get entry :sessionId) session-id)
-            (throw 'found (plist-get entry :project))))))))
-
-(defun agent-log--session-project-directory (session-id)
-  "Return the project directory for SESSION-ID.
-Try the buffer-local variable first, then fall back to history.jsonl."
-  (or (and agent-log--session-project
-           (not (string-empty-p agent-log--session-project))
-           (file-directory-p agent-log--session-project)
-           agent-log--session-project)
-      (when-let* ((project (agent-log--lookup-session-project session-id)))
-        (and (not (string-empty-p project))
-             (file-directory-p project)
-             project))))
-
 (defun agent-log-resume-session ()
-  "Resume the Claude Code session for the current buffer."
+  "Resume the session for the current buffer in the coding agent."
   (interactive)
-  (unless (require 'claude-code nil t)
-    (user-error "Package `claude-code' is required but not available"))
   (let ((session-id (or agent-log--session-id
                         (agent-log--extract-session-id-from-buffer))))
     (unless session-id
       (user-error "No session ID found in current buffer"))
-    (let ((project-dir (agent-log--session-project-directory session-id)))
-      (if project-dir
-          (cl-letf (((symbol-function 'claude-code--directory)
-                     (lambda () project-dir)))
-            (claude-code--start nil (list "--resume" session-id)))
-        (claude-code--start nil (list "--resume" session-id))))))
-
-(defun agent-log--encode-project-path (directory)
-  "Encode DIRECTORY as Claude Code does for its projects subdirectory.
-Replaces `/', `.', and space characters with `-'."
-  (replace-regexp-in-string
-   "[/. ]" "-"
-   (directory-file-name (expand-file-name directory))))
-
-(defun agent-log--find-project-session-dir (directory)
-  "Find the Claude projects subdirectory for DIRECTORY.
-Try both the expanded path and its `file-truename'."
-  (let ((projects-dir (expand-file-name "projects" agent-log-directory)))
-    (cl-loop for path in (delete-dups
-                          (list (expand-file-name directory)
-                                (file-truename (expand-file-name directory))))
-             for encoded = (agent-log--encode-project-path path)
-             for dir = (expand-file-name encoded projects-dir)
-             when (file-directory-p dir) return dir)))
-
-(defun agent-log--find-latest-jsonl (directory)
-  "Find the most recently modified JSONL file in DIRECTORY."
-  (let ((files (directory-files directory t "\\.jsonl\\'"))
-        latest latest-time)
-    (dolist (f files)
-      (let ((mtime (float-time
-                    (file-attribute-modification-time (file-attributes f)))))
-        (when (or (null latest) (> mtime latest-time))
-          (setq latest f latest-time mtime))))
-    latest))
-
-(defconst agent-log--status-directory "/tmp/claude-code-status/"
-  "Directory where Claude Code writes per-buffer JSON status files.")
-
-(defun agent-log--read-status-file ()
-  "Read the status file for the Claude session in the current buffer.
-Return a plist with :session_id and :transcript_path, or nil.
-The status file is written by Claude Code to
-`agent-log--status-directory', keyed by sanitized buffer name."
-  (when-let* ((file (agent-log--status-file-for-buffer))
-              ((file-exists-p file)))
-    (condition-case nil
-        (let* ((json (json-parse-string
-                      (with-temp-buffer
-                        (insert-file-contents file)
-                        (buffer-string))
-                      :object-type 'plist))
-               (sid (plist-get json :session_id))
-               (path (plist-get json :transcript_path)))
-          (when (and (stringp sid) (not (string-empty-p sid)))
-            (list :session_id sid :transcript_path path)))
-      (error nil))))
-
-(defun agent-log--session-id-from-buffer ()
-  "Return the session ID for the Claude session in the current buffer.
-Read it from the status file that Claude Code writes to
-`agent-log--status-directory', keyed by sanitized buffer name."
-  (plist-get (agent-log--read-status-file) :session_id))
-
-(defun agent-log--status-file-for-buffer ()
-  "Return the status file path for the current buffer."
-  (expand-file-name
-   (concat (agent-log--sanitize-buffer-name) ".json")
-   agent-log--status-directory))
-
-(defun agent-log--sanitize-buffer-name ()
-  "Sanitize the current buffer name for use as a filename.
-Replace every non-alphanumeric, non-underscore, non-hyphen
-character with an underscore."
-  (replace-regexp-in-string "[^a-zA-Z0-9_-]" "_" (buffer-name)))
-
-(defun agent-log--find-session-for-project (directory sessions)
-  "Find the latest session in SESSIONS whose project matches DIRECTORY.
-SESSIONS should be sorted newest-first (as from `agent-log--read-sessions').
-DIRECTORY is compared against each session's :project field using
-both the expanded path and `file-truename'."
-  (let ((targets (delete-dups
-                  (mapcar #'directory-file-name
-                          (list (expand-file-name directory)
-                                (file-truename (expand-file-name directory)))))))
-    (cl-loop for session in sessions
-             for project = (plist-get (cdr session) :project)
-             when (and (stringp project) (not (string-empty-p project))
-                       (member (directory-file-name (expand-file-name project))
-                               targets))
-             return session)))
-
-;;;###autoload
-(defun agent-log-open-session-at-point ()
-  "Open the log for the Claude Code session in the current buffer.
-The current buffer must be a Claude Code terminal buffer.
-When possible, identify the exact session via the status file;
-otherwise fall back to the most recent JSONL in the project
-directory or to `history.jsonl'."
-  (interactive)
-  (unless (require 'claude-code nil t)
-    (user-error "Package `claude-code' is required but not available"))
-  (unless (claude-code--buffer-p (current-buffer))
-    (user-error "Not in a Claude Code buffer"))
-  (let* ((dir (claude-code--extract-directory-from-buffer-name (buffer-name)))
-         (status (agent-log--read-status-file))
-         ;; Primary: use transcript_path from the status file directly.
-         (transcript (plist-get status :transcript_path))
-         (session-id (plist-get status :session_id))
-         (jsonl (or (and transcript (file-exists-p transcript) transcript)
-                    ;; Secondary: construct from session-dir + session-id.
-                    (let ((session-dir
-                           (and dir (agent-log--find-project-session-dir dir))))
-                      (or (and session-id session-dir
-                               (let ((f (expand-file-name
-                                         (concat session-id ".jsonl")
-                                         session-dir)))
-                                 (and (file-exists-p f) f)))
-                          (and session-dir
-                               (agent-log--find-latest-jsonl session-dir)))))))
-    (if jsonl
-        (agent-log-open-file jsonl)
-      ;; Fallback: search history.jsonl for sessions matching this project
-      (let ((match (agent-log--find-session-for-project
-                    dir (agent-log--read-sessions))))
-        (unless match
-          (user-error "No session log found for %s" (or dir "this buffer")))
-        (agent-log--open-rendered (car match) (cdr match))))))
+    (unless agent-log--backend
+      (user-error "No backend associated with this buffer"))
+    (agent-log--resume-session agent-log--backend session-id)))
 
 ;;;;; Transient menu
 

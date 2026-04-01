@@ -266,7 +266,7 @@ The command ~agent-log-open-file~ opens a specific JSONL file by path.  It promp
 
 The command ~agent-log-open-session~ opens a session by its ID.  It prompts for the session ID interactively.
 
-The command ~agent-log-open-session-at-point~ opens the log for the Claude Code session running in the current buffer.  The current buffer must be a Claude Code terminal buffer (from the =claude-code= package).  The command reads the status file that Claude Code writes to =/tmp/claude-code-status/= and uses the =transcript_path= field to locate the exact JSONL file for the session.  This uniquely identifies the session even when multiple sessions (including branches created with ~/branch~) share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching =history.jsonl=.  This lets you quickly jump from an active Claude Code session to its rendered log.
+The command ~agent-log-open-session-at-point~ opens the log for the Claude Code session running in the current buffer.  This command is defined in =agent-log-claude.el= and requires the =claude-code= package; the current buffer must be a Claude Code terminal buffer.  The command reads the status file that Claude Code writes to =/tmp/claude-code-status/= and uses the =transcript_path= field to locate the exact JSONL file for the session.  This uniquely identifies the session even when multiple sessions (including branches created with ~/branch~) share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching =history.jsonl=.  This lets you quickly jump from an active Claude Code session to its rendered log.
 
 ** Rendered directory
 :PROPERTIES:
@@ -352,9 +352,9 @@ Summaries are persisted in the index file, so they survive across Emacs sessions
 
 #+vindex: agent-log-sync-on-session-end
 
-When ~agent-log-sync-on-session-end~ is non-nil, ~agent-log-sync-all~ and ~agent-log-summarize-sessions~ run automatically each time a Claude Code session terminates.  This requires the =claude-code= package and a =Stop= hook configured in Claude Code's settings (see the =claude-code= documentation for hook setup).
+When ~agent-log-sync-on-session-end~ is non-nil, ~agent-log-sync-all~ and ~agent-log-summarize-sessions~ run automatically each time a Claude Code session terminates.  This requires the =claude-code= package and a =Stop= hook configured in Claude Code's settings (see the =claude-code= documentation for hook setup).  The hook handler (~agent-log-claude--session-end-handler~) is defined in =agent-log-claude.el= and is installed via ~eval-after-load~ when the defcustom is set before the backend is loaded.
 
-Sessions with a live Claude Code process are excluded from summarization by session ID (via =claude-code-extras=), so in-progress conversations are never summarized prematurely.  If summarization is already running when another session ends, the in-progress batch continues undisturbed.
+Sessions with a live agent process are excluded from summarization by session ID.  Each backend's ~agent-log--active-session-ids~ method provides the IDs of currently running sessions.  If summarization is already running when another session ends, the in-progress batch continues undisturbed.
 
 ** Session rename
 :PROPERTIES:
@@ -368,7 +368,7 @@ The user option ~agent-log-auto-rename-sessions~ controls whether sessions are r
 
 The default value is ~nil~.  Set it to ~t~ if you want session names to stay in sync with summaries automatically.
 
-The command ~agent-log-rename-sessions~ renames all sessions that lack a custom title.  For each session that has a one-line summary in the index but no =custom-title= entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (=C-u=), it overwrites existing custom titles as well, which is useful after changing the title format.
+The command ~agent-log-rename-sessions~ renames all sessions that lack a custom title.  This command is defined in =agent-log-claude.el= because custom-title entries are a Claude Code-specific JSONL convention.  For each session that has a one-line summary in the index but no =custom-title= entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (=C-u=), it overwrites existing custom titles as well, which is useful after changing the title format.
 
 This is a purely local, offline operation — no API calls are made.  Sessions must be summarized first via ~agent-log-summarize-sessions~ ([[#h:summary-generation][Summary generation]]).  Sessions that already have a custom title (e.g. from Claude Code's =/rename= command) are skipped.
 
@@ -403,9 +403,7 @@ Before stage 2, the estimated token cost is compared against ~agent-log-search-b
 
 #+findex: agent-log-resume-session
 
-The command ~agent-log-resume-session~ resumes the Claude Code session displayed in the current buffer.  It requires the =claude-code= package.  The command extracts the session ID from the buffer (either from the buffer-local variable or from the front-matter comment) and passes it to Claude Code with the =--resume= flag.
-
-If the session's project directory can be determined (from the buffer-local variable or from =history.jsonl=), Claude Code is started in that directory.  The keybinding is =r= in ~agent-log-mode~.
+The command ~agent-log-resume-session~ resumes the session displayed in the current buffer in the coding agent.  The command extracts the session ID from the buffer (either from the buffer-local variable or from the front-matter comment) and dispatches to the buffer's backend via the ~agent-log--resume-session~ generic function.  For Claude Code sessions, this requires the =claude-code= package and passes the session ID with the =--resume= flag, starting in the session's project directory when possible.  The keybinding is =r= in ~agent-log-mode~.
 
 * ~agent-log-mode~
 :PROPERTIES:
@@ -431,7 +429,7 @@ The full keymap is:
 | =E=   | ~agent-log-expand-all~           | Expand all sections                     |
 | =g=   | ~agent-log-refresh~              | Re-render the buffer from scratch       |
 | =w=   | ~agent-log-copy-turn~            | Copy the current turn to the kill ring  |
-| =r=   | ~agent-log-resume-session~       | Resume the session in Claude Code       |
+| =r=   | ~agent-log-resume-session~       | Resume the session in the coding agent  |
 | =?=   | ~agent-log-menu~                 | Open the transient menu                 |
 | =q=   | ~quit-window~                     | Close the buffer                        |
 
@@ -478,7 +476,7 @@ The package uses a generic interface to support multiple AI coding agents.  The 
 
 Backend files are loaded lazily.  When a backend is first accessed (e.g. during ~agent-log-browse-sessions~), the package calls ~require~ on the backend's feature name and the backend registers a singleton instance in a global registry.  The registry maps backend key symbols to struct instances, so all dispatch goes through the struct's type.
 
-The rendering pipeline, session browser, live update mechanism, AI summaries, and AI search all operate on a normalized intermediate representation.  Each backend's ~agent-log--normalize-entries~ method converts its native JSONL format into canonical plists that the generic code expects.  This means the core of the package is backend-agnostic: adding a new backend requires only implementing the generic functions, with no changes to the core file.
+The rendering pipeline, session browser, live update mechanism, AI summaries, and AI search all operate on a normalized intermediate representation.  Each backend's ~agent-log--normalize-entries~ method converts its native JSONL format into canonical plists that the generic code expects.  Core functions such as ~agent-log--render-to-file~ and ~agent-log--extract-conversation-text~ receive a backend instance and thread it through to generic dispatch points (conversation filtering, entry classification, tool summarization, text extraction).  The convenience function ~agent-log--read-all-sessions~ returns sessions from the first active backend; individual buffers store their backend in the buffer-local variable ~agent-log--backend~, set when a session is opened.  This means the core of the package is backend-agnostic: adding a new backend requires only implementing the generic functions, with no changes to the core file.
 
 ** Data sources
 :PROPERTIES:
@@ -516,7 +514,7 @@ Each =.md= file contains HTML-comment front matter (session ID, source path, ren
 :CUSTOM_ID: h:rendering-pipeline
 :END:
 
-Each JSONL entry has a ~type~ field: ~user~, ~assistant~, ~progress~, ~system~, or ~file-history-snapshot~.  The package filters to ~user~ and ~assistant~ entries, further excluding system-generated messages (entries whose content starts with known XML tags such as =<local-command-stdout>= or =<command-name>=).
+Each JSONL entry has a ~type~ field: ~user~, ~assistant~, ~progress~, ~system~, or ~file-history-snapshot~.  The package filters entries via the backend's ~agent-log--filter-conversation~ and ~agent-log--conversation-entry-p~ methods, which select ~user~ and ~assistant~ entries while excluding system-generated messages.  For Claude Code, system entries are those whose content starts with known XML tags such as =<local-command-stdout>= or =<command-name>=.
 
 Filtered entries are rendered as Markdown with =##= headings for conversation turns and =####= headings for tool calls and thinking blocks.  User turns show any text content followed by tool results.  Assistant turns show thinking blocks, text content, and tool-use summaries.
 
