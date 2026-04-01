@@ -1,4 +1,4 @@
-#+title: agent-log: Browse Claude Code conversation logs in Emacs
+#+title: agent-log: Browse AI coding agent session logs in Emacs
 #+author: Pablo Stafforini
 #+email: pablo@stafforini.com
 #+language: en
@@ -8,7 +8,7 @@
 #+texinfo_filename: agent-log.info
 #+texinfo_dir_category: Emacs misc features
 #+texinfo_dir_title: Agent-Log: (agent-log)
-#+texinfo_dir_desc: Browse Claude Code conversation logs in Emacs
+#+texinfo_dir_desc: Browse AI coding agent session logs in Emacs
 
 This manual describes the features and customization options for the Emacs Lisp file =agent-log.el=.
 
@@ -17,20 +17,22 @@ This manual describes the features and customization options for the Emacs Lisp 
 :CUSTOM_ID: h:overview
 :END:
 
-[[https://docs.anthropic.com/en/docs/claude-code][Claude Code]] stores complete conversation transcripts as JSONL files under =~/.claude/projects/=.  While these files contain a full record of every session, they are not human-readable: each line is a JSON object with nested content arrays, tool-use blocks, thinking sections, and system metadata.  =agent-log.el= renders these transcripts into readable Markdown files and provides a dedicated Emacs interface for browsing, searching, and navigating them.
+AI coding agents such as [[https://docs.anthropic.com/en/docs/claude-code][Claude Code]] and [[https://openai.com/index/introducing-codex/][Codex]] store complete conversation transcripts as JSONL files.  While these files contain a full record of every session, they are not human-readable: each line is a JSON object with nested content arrays, tool-use blocks, thinking sections, and system metadata.  =agent-log.el= renders these transcripts into readable Markdown files and provides a dedicated Emacs interface for browsing, searching, and navigating them.
 
-The package maintains a mirror directory of pre-rendered Markdown files under =~/.claude/rendered/=, organized by project.  This means that standard tools such as =consult-ripgrep=, Dired, and =grep= work natively on readable content without any special integration.
+The package supports multiple backends through a generic interface based on ~cl-defstruct~ and ~cl-defmethod~.  Each backend knows how to discover sessions, parse its tool's JSONL format, and normalize entries into a canonical representation that the rendering pipeline, session browser, and AI features operate on.  Currently supported backends are Claude Code (=agent-log-claude.el=) and Codex (=agent-log-codex.el=).  By default, the package auto-detects which tools are installed and activates the corresponding backends ([[#h:backend-configuration][Backend configuration]]).
+
+The package maintains a mirror directory of pre-rendered Markdown files, organized by project.  This means that standard tools such as =consult-ripgrep=, Dired, and =grep= work natively on readable content without any special integration.
 
 The core capabilities of =agent-log.el= are:
 
 - *Session browsing*.  A ~completing-read~ interface lists all sessions, grouped by project or as a flat list, sorted by recency.  Each candidate shows the date, project name, and either an AI-generated summary or the first user message ([[#h:session-browsing][Session browsing]]).
 - *Lazy rendering*.  Sessions are rendered to =.md= files on first access.  The package tracks JSONL file sizes in an index to avoid re-rendering files that have not changed ([[#h:sync-and-rendering][Sync and rendering]]).
-- *Live updates*.  For active sessions, a ~file-notify~ watcher detects JSONL changes and appends new entries to both the =.md= file on disk and the open buffer in real time ([[#h:agent-log-live-update][~agent-log-live-update~]]).
+- *Live updates*.  For active sessions, a ~file-notify~ watcher detects JSONL changes and appends new entries to both the =.md= file on disk and the open buffer in real time ([[#h:live-updates][Live updates]]).
 - *Outline navigation*.  Rendered buffers use ~outline-minor-mode~ for folding tool calls, thinking blocks, and tool results.  Dedicated keybindings jump between conversation turns ([[#h:navigation][Navigation]]).
 - *Smart tool summaries*.  Each tool call is summarized by its most relevant input—the file path for Read/Write, the command for Bash, the pattern for Grep, and so on.
 - *AI-powered session summaries*.  An optional integration with =gptel= generates concise one-line and paragraph summaries for each session, displayed in the browser and at the top of rendered buffers ([[#h:summary-generation][Summary generation]]).
 - *AI-powered search*.  A two-stage LLM pipeline lets you search your session history with natural language queries.  A scope-narrowing model filters sessions by project and date range, then a selection model identifies the most relevant sessions and presents a narrative with clickable links ([[#h:ai-search][AI search]]).
-- *Session resumption*.  You can resume any session directly in Claude Code from within the rendered buffer, provided the =claude-code= package is installed ([[#h:session-resumption][Session resumption]]).
+- *Session resumption*.  You can resume any session directly in the coding agent from within the rendered buffer, provided the corresponding Emacs integration package is installed (e.g. =claude-code= for Claude Code) ([[#h:session-resumption][Session resumption]]).
 
 The package requires Emacs 29.1 or later and [[https://jblevins.org/projects/markdown-mode/][markdown-mode]] 2.6 or later.  The optional summary feature requires [[https://github.com/karthink/gptel][gptel]].  Session resumption requires [[https://github.com/stevemolitor/claude-code.el][claude-code]].
 
@@ -84,6 +86,25 @@ If you use ~use-package~, add one of the following snippets to your init file:
 
 All user options belong to the ~agent-log~ customization group.  You can browse them interactively with =M-x customize-group RET agent-log RET=.
 
+** Backend configuration
+:PROPERTIES:
+:CUSTOM_ID: h:backend-configuration
+:END:
+
+#+vindex: agent-log-backends
+#+vindex: agent-log-active-backends
+
+The user option ~agent-log-backends~ is an alist mapping backend key symbols to their feature (file) names.  Each entry is a cons cell =(KEY . FEATURE)= where =KEY= is a symbol identifying the backend (e.g. ~claude-code~, ~codex~) and =FEATURE= is the symbol passed to ~require~ to load the backend file.  Backend files are loaded lazily on first use.  The default value includes entries for Claude Code and Codex:
+
+#+begin_src emacs-lisp
+'((claude-code . agent-log-claude)
+  (codex . agent-log-codex))
+#+end_src
+
+You would modify this to add a custom backend or to remove a backend you do not want available.
+
+The user option ~agent-log-active-backends~ controls which backends are scanned for sessions.  It accepts either the symbol ~auto~ or a list of backend key symbols.  When set to ~auto~ (the default), the package checks whether each backend's root directory exists on disk (e.g. =~/.claude= for Claude Code, =~/.codex= for Codex) and activates only the backends whose directories are found.  Set it to an explicit list such as ~(claude-code)~ if you want to restrict the session browser to a specific backend regardless of what is installed.
+
 ** Directory configuration
 :PROPERTIES:
 :CUSTOM_ID: h:directory-configuration
@@ -92,7 +113,7 @@ All user options belong to the ~agent-log~ customization group.  You can browse 
 #+vindex: agent-log-directory
 #+vindex: agent-log-rendered-directory
 
-The user option ~agent-log-directory~ specifies the root directory of your Claude Code configuration.  The package reads =history.jsonl= in this directory and looks for session files under the =projects/= subdirectory.  The default value is =~/.claude=.  You would change this only if you have configured Claude Code to use a non-standard location.
+The user option ~agent-log-directory~ specifies the root directory of your Claude Code configuration.  The package reads =history.jsonl= in this directory and looks for session files under the =projects/= subdirectory.  The default value is =~/.claude=.  You would change this only if you have configured Claude Code to use a non-standard location.  This option applies to the Claude Code backend; each backend has its own directory configuration.
 
 The user option ~agent-log-rendered-directory~ specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated =.md= file within it ([[#h:sync-and-rendering][Sync and rendering]]).  The default value is =~/.claude/rendered=.  You might change this if you want rendered files to live outside the Claude configuration directory, for example on a path indexed by a desktop search tool.
 
@@ -447,6 +468,17 @@ The Settings column displays the current value of each option (e.g., ~collapsed~
 :PROPERTIES:
 :CUSTOM_ID: h:how-it-works
 :END:
+
+** Backend architecture
+:PROPERTIES:
+:CUSTOM_ID: h:backend-architecture
+:END:
+
+The package uses a generic interface to support multiple AI coding agents.  The base type ~agent-log-backend~ (defined with ~cl-defstruct~) provides shared slots for the backend name, key symbol, root directory, and rendered directory.  Each backend extends this type via ~:include~ and implements a set of generic functions (~cl-defgeneric~ / ~cl-defmethod~) that handle backend-specific operations: session discovery, JSONL entry normalization, conversation filtering, tool input summarization, and session resumption.
+
+Backend files are loaded lazily.  When a backend is first accessed (e.g. during ~agent-log-browse-sessions~), the package calls ~require~ on the backend's feature name and the backend registers a singleton instance in a global registry.  The registry maps backend key symbols to struct instances, so all dispatch goes through the struct's type.
+
+The rendering pipeline, session browser, live update mechanism, AI summaries, and AI search all operate on a normalized intermediate representation.  Each backend's ~agent-log--normalize-entries~ method converts its native JSONL format into canonical plists that the generic code expects.  This means the core of the package is backend-agnostic: adding a new backend requires only implementing the generic functions, with no changes to the core file.
 
 ** Data sources
 :PROPERTIES:

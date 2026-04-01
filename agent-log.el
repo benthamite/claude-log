@@ -61,6 +61,65 @@
 (declare-function gptel-backend-models "gptel")
 (declare-function gptel-plus-compute-cost "gptel-plus")
 
+;;;;; Backend framework
+
+(cl-defstruct (agent-log-backend (:constructor nil)
+                                  (:copier nil))
+  "Base type for agent-log backends.
+Each backend represents an AI coding agent (Claude Code, Codex, etc.)
+and knows how to discover sessions, parse JSONL entries, and render
+conversations."
+  (name nil :type string :documentation "Display name, e.g. \"Claude Code\".")
+  (key nil :type symbol :documentation "Backend key, e.g. `claude-code'.")
+  (directory nil :type string :documentation "Root configuration directory.")
+  (rendered-directory nil :type string
+                      :documentation "Where rendered Markdown files go."))
+
+;;;;;; Generic functions
+
+(cl-defgeneric agent-log--read-sessions (backend)
+  "Return an alist of (SESSION-ID . METADATA) for BACKEND.
+METADATA is a plist with at least :display, :timestamp, :project,
+:file, and :file-dir.  Sessions are sorted most-recent-first.")
+
+(cl-defgeneric agent-log--build-session-file-index (backend)
+  "Return a hash table mapping session IDs to file paths for BACKEND.")
+
+(cl-defgeneric agent-log--find-session-file (backend session-id)
+  "Return the JSONL file path for SESSION-ID under BACKEND, or nil.")
+
+(cl-defgeneric agent-log--normalize-entries (backend entries)
+  "Convert raw JSONL ENTRIES to the canonical plist format for BACKEND.
+Returns a list of normalized entries suitable for the rendering pipeline.")
+
+(cl-defgeneric agent-log--filter-conversation (backend entries)
+  "Return only conversation entries from ENTRIES for BACKEND.")
+
+(cl-defgeneric agent-log--conversation-entry-p (backend entry)
+  "Return non-nil if ENTRY is a conversation turn for BACKEND.")
+
+(cl-defgeneric agent-log--system-entry-p (backend entry)
+  "Return non-nil if ENTRY is a system-generated message for BACKEND.")
+
+(cl-defgeneric agent-log--extract-session-metadata (backend entries)
+  "Extract session metadata from ENTRIES for BACKEND.
+Returns a plist with :project and :date.")
+
+(cl-defgeneric agent-log--first-user-text (backend entries)
+  "Return the text of the first user message in ENTRIES for BACKEND.")
+
+(cl-defgeneric agent-log--summarize-tool-input-by-name (backend name input)
+  "Return a one-line summary for tool NAME with INPUT plist for BACKEND.")
+
+(cl-defgeneric agent-log--extract-message-text (backend content)
+  "Extract plain text from message CONTENT for BACKEND.")
+
+(cl-defgeneric agent-log--active-session-ids (backend)
+  "Return a list of session IDs for live sessions under BACKEND.")
+
+(cl-defgeneric agent-log--resume-session (backend session-id)
+  "Resume the session SESSION-ID in the coding agent for BACKEND.")
+
 ;;;;; Customization
 
 (defgroup agent-log nil
@@ -68,12 +127,64 @@
   :group 'tools
   :prefix "agent-log-")
 
+(defcustom agent-log-backends
+  '((claude-code . agent-log-claude)
+    (codex . agent-log-codex))
+  "Alist mapping backend key symbols to their feature (file) names.
+Each backend file is loaded on first use."
+  :type '(alist :key-type symbol :value-type symbol))
+
+(defcustom agent-log-active-backends 'auto
+  "Backends to scan for sessions.
+A list of backend key symbols, or the symbol `auto' to detect
+installed tools by checking for their config directories."
+  :type '(choice (const :tag "Auto-detect installed" auto)
+                 (repeat :tag "Explicit list" symbol)))
+
+;;;;;; Backend registry
+
+(defvar agent-log--backend-registry (make-hash-table :test #'eq)
+  "Hash table mapping backend key symbols to backend struct instances.")
+
+(defun agent-log--register-backend (key instance)
+  "Register backend INSTANCE under KEY."
+  (puthash key instance agent-log--backend-registry))
+
+(defun agent-log--get-backend (key)
+  "Return the backend instance for KEY, loading it if needed.
+Returns nil if KEY is not in `agent-log-backends'."
+  (or (gethash key agent-log--backend-registry)
+      (when-let* ((feature (alist-get key agent-log-backends)))
+        (require feature nil t)
+        (gethash key agent-log--backend-registry))))
+
+(defun agent-log--detect-backends ()
+  "Return a list of backend keys whose directories exist."
+  (let (result)
+    (pcase-dolist (`(,key . ,_feature) agent-log-backends)
+      (when-let* ((instance (agent-log--get-backend key))
+                  (dir (agent-log-backend-directory instance)))
+        (when (file-directory-p (expand-file-name dir))
+          (push key result))))
+    (nreverse result)))
+
+(defun agent-log--active-backend-instances ()
+  "Return a list of backend instances for all active backends."
+  (let ((keys (if (eq agent-log-active-backends 'auto)
+                  (agent-log--detect-backends)
+                agent-log-active-backends)))
+    (delq nil (mapcar #'agent-log--get-backend keys))))
+
 (defcustom agent-log-directory "~/.claude"
-  "Root directory of Claude Code configuration."
+  "Root directory of Claude Code configuration.
+This variable is used by the Claude Code backend.  In future
+versions it will move to `agent-log-claude-directory'."
   :type 'directory)
 
 (defcustom agent-log-rendered-directory "~/.claude/rendered"
-  "Directory where rendered Markdown files are stored."
+  "Directory where rendered Markdown files are stored.
+This variable is used by the Claude Code backend.  In future
+versions it will move to a backend-specific customization."
   :type 'directory)
 
 (defcustom agent-log-show-thinking 'collapsed
@@ -202,6 +313,11 @@ the `gptel-plus' package; if unavailable, the budget is not enforced."
                  (cons :tag "Dollar limit" (const :tag "" dollars) number)))
 
 ;;;;; Internal variables
+
+(defvar-local agent-log--backend nil
+  "Backend instance for the current buffer.
+Set when a session is opened so that buffer-local operations
+\(live updates, rendering, resume) dispatch to the correct backend.")
 
 (defvar-local agent-log--source-file nil
   "Path to the JSONL file being displayed.")
