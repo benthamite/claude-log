@@ -559,9 +559,13 @@ Returns (RENDERED-PATH . JSONL-SIZE)."
     (with-temp-file rendered-path
       (insert (claude-log--render-front-matter
                session-id jsonl-file jsonl-size))
-      (insert (format "# Session: %s — %s\n\n"
-                      (plist-get session-meta :project)
-                      (plist-get session-meta :date)))
+      (let ((project (plist-get session-meta :project)))
+        (when (equal project "unknown")
+          (setq project (claude-log--short-project
+                         (or (plist-get metadata :project) ""))))
+        (insert (format "# Session: %s — %s\n\n"
+                        project
+                        (plist-get session-meta :date))))
       (dolist (entry conversation)
         (insert (claude-log--render-entry entry))))
     (cons rendered-path jsonl-size)))
@@ -908,9 +912,10 @@ known system XML tag."
   (when-let* ((first-msg (claude-log--find-first-message entries)))
     (setq claude-log--session-date
           (claude-log--format-iso-timestamp (plist-get first-msg :timestamp))))
-  (when-let* ((progress (claude-log--find-progress-entry entries)))
-    (setq claude-log--session-project
-          (or (plist-get progress :cwd) ""))))
+  (when-let* ((progress (claude-log--find-progress-entry entries))
+              (cwd (plist-get progress :cwd))
+              ((not (string-empty-p cwd))))
+    (setq claude-log--session-project cwd)))
 
 (defun claude-log--render-header ()
   "Return the Markdown header for the session."
