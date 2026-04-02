@@ -34,7 +34,7 @@ The core capabilities of =agent-log.el= are:
 - *AI-powered search*.  A two-stage LLM pipeline lets you search your session history with natural language queries.  A scope-narrowing model filters sessions by project and date range, then a selection model identifies the most relevant sessions and presents a narrative with clickable links ([[#h:ai-search][AI search]]).
 - *Session resumption*.  You can resume any session directly in the coding agent from within the rendered buffer, provided the corresponding Emacs integration package is installed (e.g. =claude-code= for Claude Code) ([[#h:session-resumption][Session resumption]]).
 
-The package requires Emacs 29.1 or later and [[https://jblevins.org/projects/markdown-mode/][markdown-mode]] 2.6 or later.  The optional summary feature requires [[https://github.com/karthink/gptel][gptel]].  Session resumption requires [[https://github.com/stevemolitor/claude-code.el][claude-code]].
+The package requires Emacs 29.1 or later and [[https://jblevins.org/projects/markdown-mode/][markdown-mode]] 2.6 or later.  The optional summary feature requires [[https://github.com/karthink/gptel][gptel]].  Session resumption for Claude Code sessions requires [[https://github.com/stevemolitor/claude-code.el][claude-code]].
 
 The development repository is on [[https://github.com/benthamite/agent-log][GitHub]].
 
@@ -113,9 +113,9 @@ The user option ~agent-log-active-backends~ controls which backends are scanned 
 #+vindex: agent-log-directory
 #+vindex: agent-log-rendered-directory
 
-The user option ~agent-log-directory~ specifies the root directory of your Claude Code configuration.  The package reads =history.jsonl= in this directory and looks for session files under the =projects/= subdirectory.  The default value is =~/.claude=.  You would change this only if you have configured Claude Code to use a non-standard location.  This option applies to the Claude Code backend; each backend has its own directory configuration.
+The user option ~agent-log-directory~ specifies the root directory of the Claude Code backend's configuration.  The package reads =history.jsonl= in this directory and looks for session files under the =projects/= subdirectory.  The default value is =~/.claude=.  You would change this only if you have configured Claude Code to use a non-standard location.  Each backend has its own directory configuration.
 
-The user option ~agent-log-rendered-directory~ specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated =.md= file within it ([[#h:sync-and-rendering][Sync and rendering]]).  The default value is =~/.claude/rendered=.  You might change this if you want rendered files to live outside the Claude configuration directory, for example on a path indexed by a desktop search tool.
+The user option ~agent-log-rendered-directory~ specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated =.md= file within it ([[#h:sync-and-rendering][Sync and rendering]]).  The default value is =~/.claude/rendered=.  You might change this if you want rendered files to live outside the default configuration directory, for example on a path indexed by a desktop search tool.
 
 ** Display of thinking and tool sections
 :PROPERTIES:
@@ -125,7 +125,7 @@ The user option ~agent-log-rendered-directory~ specifies the directory where ren
 #+vindex: agent-log-show-thinking
 #+vindex: agent-log-show-tools
 
-Claude Code conversations contain thinking blocks (the model's chain-of-thought reasoning) and tool-use sections (file reads, bash commands, grep searches, and so on).  These are valuable for understanding what the assistant did, but they can also be verbose and clutter the view when you are reading the high-level conversation.
+Agent conversations contain thinking blocks (the model's chain-of-thought reasoning) and tool-use sections (file reads, bash commands, grep searches, and so on).  These are valuable for understanding what the assistant did, but they can also be verbose and clutter the view when you are reading the high-level conversation.
 
 The user option ~agent-log-show-thinking~ controls how thinking blocks appear.  It accepts one of three symbols:
 
@@ -188,7 +188,7 @@ The user option ~agent-log-slug-max-length~ sets the maximum length of the slug 
 
 #+vindex: agent-log-live-update
 
-The user option ~agent-log-live-update~ controls whether the package watches the source JSONL file for changes when a rendered buffer is open.  When non-~nil~ (the default), a ~file-notify~ watcher detects new entries appended to the JSONL file and renders them into both the open buffer and the =.md= file on disk.  This means you can have a rendered log open alongside an active Claude Code session and see new turns appear as they happen.
+The user option ~agent-log-live-update~ controls whether the package watches the source JSONL file for changes when a rendered buffer is open.  When non-~nil~ (the default), a ~file-notify~ watcher detects new entries appended to the JSONL file and renders them into both the open buffer and the =.md= file on disk.  This means you can have a rendered log open alongside an active coding agent session and see new turns appear as they happen.
 
 Set this to ~nil~ if you experience performance issues with file watching, or if you are on a system where ~file-notify~ is not reliable (e.g., certain remote filesystems via TRAMP).
 
@@ -250,7 +250,7 @@ In ~dollars~ mode, cost estimation requires the =gptel-plus= package.  If =gptel
 #+findex: agent-log-open-session
 #+findex: agent-log-open-session-at-point
 
-The command ~agent-log-browse-sessions~ is the primary entry point for exploring your Claude Code history.  It reads =history.jsonl=, resolves each session to its JSONL file on disk, and presents the results in a ~completing-read~ prompt.  Each candidate is formatted as:
+The command ~agent-log-browse-sessions~ is the primary entry point for exploring your session history.  It reads =history.jsonl=, resolves each session to its JSONL file on disk, and presents the results in a ~completing-read~ prompt.  Each candidate is formatted as:
 
 #+begin_example
 2026-02-22 14:06  my-project  "Fix the authentication bug in..."
@@ -260,7 +260,7 @@ When ~agent-log-group-by-project~ is non-~nil~ (the default), the command first 
 
 Selecting a session lazily renders it to a =.md= file if needed, then opens the rendered buffer in ~agent-log-mode~ ([[#h:agent-log-mode][~agent-log-mode~]]).
 
-The command ~agent-log-open-latest~ opens the most recent session directly, without prompting.  This is convenient when you want to review the last conversation you had with Claude Code.
+The command ~agent-log-open-latest~ opens the most recent session directly, without prompting.  This is convenient when you want to review the last conversation you had with a coding agent.
 
 The command ~agent-log-open-file~ opens a specific JSONL file by path.  It prompts for a file path interactively.  This is useful for automation, for opening session files you found via the filesystem, or when you know the exact file you want.
 
@@ -458,7 +458,7 @@ The keymap is minimal:
 
 The command ~agent-log-menu~ opens a transient menu that groups all ~agent-log~ commands into four columns: Open, Sync & AI, Navigate (shown only inside a ~agent-log-mode~ buffer), and Settings.  The keybinding is =?= in ~agent-log-mode~.  The menu is also available globally via its autoload, so you can bind it to a key of your choice outside of ~agent-log-mode~.
 
-The Open column includes ~agent-log-resume-session~ (bound to =r=), which resumes the session displayed in the current buffer in Claude Code.  The Sync & AI column includes the ~agent-log-search~ command, bound to =/=.
+The Open column includes ~agent-log-resume-session~ (bound to =r=), which resumes the session displayed in the current buffer in the coding agent.  The Sync & AI column includes the ~agent-log-search~ command, bound to =/=.
 
 The Settings column displays the current value of each option (e.g., ~collapsed~, ~on~, ~off~) highlighted with the ~transient-value~ face, matching the convention used by =magit= and other transient-based menus.  In the Navigate column, =G= refreshes the buffer; in the Settings column, =g= toggles grouping by project.
 
@@ -483,7 +483,7 @@ The rendering pipeline, session browser, live update mechanism, AI summaries, an
 :CUSTOM_ID: h:data-sources
 :END:
 
-Claude Code stores conversation data in two places:
+The Claude Code backend reads conversation data from two places:
 
 1. =~/.claude/history.jsonl=: a global index mapping session IDs to projects and timestamps.
 2. =~/.claude/projects/<encoded-path>/<uuid>.jsonl=: one file per session, containing all messages as JSON lines.
@@ -537,7 +537,7 @@ When ~agent-log-live-update~ is non-~nil~ and a rendered buffer is open, the pac
 :CUSTOM_ID: h:no-sessions-found
 :END:
 
-Ensure that ~agent-log-directory~ points to the correct Claude Code configuration directory ([[#h:directory-configuration][Directory configuration]]).  The package reads =history.jsonl= in that directory and looks for session files under =projects/=.
+Ensure that ~agent-log-directory~ points to the correct configuration directory ([[#h:directory-configuration][Directory configuration]]).  The package reads =history.jsonl= in that directory and looks for session files under =projects/=.
 
 ** Rendered files not updating
 :PROPERTIES:

@@ -1,10 +1,10 @@
-# `agent-log`: Browse Claude Code conversation logs in Emacs
+# `agent-log`: Browse AI coding agent session logs in Emacs
 
 ## Overview
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) stores complete conversation transcripts as JSONL files under `~/.claude/projects/`. These files are machine-readable but not human-friendly. `agent-log` renders them as plain Markdown files under `~/.claude/rendered/`, so that standard tools -- `consult-ripgrep`, Dired, `grep` -- work natively on readable content.
+AI coding agents such as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/introducing-codex/) store complete conversation transcripts as JSONL files. These files are machine-readable but not human-friendly. `agent-log` renders them as plain Markdown files so that standard tools -- `consult-ripgrep`, Dired, `grep` -- work natively on readable content.
 
-The package provides a session browser that lists all your Claude Code conversations, grouped by project and sorted most-recent-first. Sessions are lazily rendered on first access: you pick a session, and `agent-log` converts its JSONL transcript into a well-structured Markdown file with headings for each turn, collapsible tool calls, and thinking blocks. For active conversations, a file watcher keeps the rendered buffer updated in real time.
+The package provides a session browser that lists all your coding agent conversations, grouped by project and sorted most-recent-first. Sessions are lazily rendered on first access: you pick a session, and `agent-log` converts its JSONL transcript into a well-structured Markdown file with headings for each turn, collapsible tool calls, and thinking blocks. For active conversations, a file watcher keeps the rendered buffer updated in real time.
 
 Key capabilities:
 

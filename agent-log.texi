@@ -23,7 +23,7 @@
 @node Top
 @top agent-log: Browse AI coding agent session logs in Emacs
 
-This manual describes the features and customization options for the Emacs Lisp file @samp{agent-log.el}.
+This manual describes the features and customization options for the @samp{agent-log} package (@samp{agent-log.el} and its backend files).
 
 @end ifnottex
 
@@ -132,7 +132,7 @@ The core capabilities of @samp{agent-log.el} are:
 @strong{Session resumption}.  You can resume any session directly in the coding agent from within the rendered buffer, provided the corresponding Emacs integration package is installed (e.g. @samp{claude-code} for Claude Code) (@ref{Session resumption}).
 @end itemize
 
-The package requires Emacs 29.1 or later and @uref{https://jblevins.org/projects/markdown-mode/, markdown-mode} 2.6 or later.  The optional summary feature requires @uref{https://github.com/karthink/gptel, gptel}.  Session resumption requires @uref{https://github.com/stevemolitor/claude-code.el, claude-code}.
+The package requires Emacs 29.1 or later and @uref{https://jblevins.org/projects/markdown-mode/, markdown-mode} 2.6 or later.  The optional summary feature requires @uref{https://github.com/karthink/gptel, gptel}.  Session resumption for Claude Code sessions requires @uref{https://github.com/stevemolitor/claude-code.el, claude-code}.
 
 The development repository is on @uref{https://github.com/benthamite/agent-log, GitHub}.
 
@@ -216,9 +216,9 @@ The user option @code{agent-log-active-backends} controls which backends are sca
 @vindex agent-log-directory
 @vindex agent-log-rendered-directory
 
-The user option @code{agent-log-directory} specifies the root directory of your Claude Code configuration.  The package reads @samp{history.jsonl} in this directory and looks for session files under the @samp{projects/} subdirectory.  The default value is @samp{~/.claude}.  You would change this only if you have configured Claude Code to use a non-standard location.  This option applies to the Claude Code backend; each backend has its own directory configuration.
+The user option @code{agent-log-directory} specifies the root directory of the Claude Code backend's configuration.  The package reads @samp{history.jsonl} in this directory and looks for session files under the @samp{projects/} subdirectory.  The default value is @samp{~/.claude}.  You would change this only if you have configured Claude Code to use a non-standard location.  Each backend has its own directory configuration.
 
-The user option @code{agent-log-rendered-directory} specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated @samp{.md} file within it (@ref{Sync and rendering}).  The default value is @samp{~/.claude/rendered}.  You might change this if you want rendered files to live outside the Claude configuration directory, for example on a path indexed by a desktop search tool.
+The user option @code{agent-log-rendered-directory} specifies the directory where rendered Markdown files are stored.  Each project gets its own subdirectory, and each session is rendered as a dated @samp{.md} file within it (@ref{Sync and rendering}).  The default value is @samp{~/.claude/rendered}.  You might change this if you want rendered files to live outside the default configuration directory, for example on a path indexed by a desktop search tool.
 
 @node Display of thinking and tool sections
 @section Display of thinking and tool sections
@@ -226,7 +226,7 @@ The user option @code{agent-log-rendered-directory} specifies the directory wher
 @vindex agent-log-show-thinking
 @vindex agent-log-show-tools
 
-Claude Code conversations contain thinking blocks (the model's chain-of-thought reasoning) and tool-use sections (file reads, bash commands, grep searches, and so on).  These are valuable for understanding what the assistant did, but they can also be verbose and clutter the view when you are reading the high-level conversation.
+Agent conversations contain thinking blocks (the model's chain-of-thought reasoning) and tool-use sections (file reads, bash commands, grep searches, and so on).  These are valuable for understanding what the assistant did, but they can also be verbose and clutter the view when you are reading the high-level conversation.
 
 The user option @code{agent-log-show-thinking} controls how thinking blocks appear.  It accepts one of three symbols:
 
@@ -286,7 +286,7 @@ The user option @code{agent-log-slug-max-length} sets the maximum length of the 
 
 @vindex agent-log-live-update
 
-The user option @code{agent-log-live-update} controls whether the package watches the source JSONL file for changes when a rendered buffer is open.  When non-@code{nil} (the default), a @code{file-notify} watcher detects new entries appended to the JSONL file and renders them into both the open buffer and the @samp{.md} file on disk.  This means you can have a rendered log open alongside an active Claude Code session and see new turns appear as they happen.
+The user option @code{agent-log-live-update} controls whether the package watches the source JSONL file for changes when a rendered buffer is open.  When non-@code{nil} (the default), a @code{file-notify} watcher detects new entries appended to the JSONL file and renders them into both the open buffer and the @samp{.md} file on disk.  This means you can have a rendered log open alongside an active coding agent session and see new turns appear as they happen.
 
 Set this to @code{nil} if you experience performance issues with file watching, or if you are on a system where @code{file-notify} is not reliable (e.g., certain remote filesystems via TRAMP).
 
@@ -353,7 +353,7 @@ In @code{dollars} mode, cost estimation requires the @samp{gptel-plus} package. 
 @findex agent-log-open-session
 @findex agent-log-open-session-at-point
 
-The command @code{agent-log-browse-sessions} is the primary entry point for exploring your Claude Code history.  It reads @samp{history.jsonl}, resolves each session to its JSONL file on disk, and presents the results in a @code{completing-read} prompt.  Each candidate is formatted as:
+The command @code{agent-log-browse-sessions} is the primary entry point for exploring your session history.  It reads @samp{history.jsonl}, resolves each session to its JSONL file on disk, and presents the results in a @code{completing-read} prompt.  Each candidate is formatted as:
 
 @example
 2026-02-22 14:06  my-project  "Fix the authentication bug in..."
@@ -363,13 +363,13 @@ When @code{agent-log-group-by-project} is non-@code{nil} (the default), the comm
 
 Selecting a session lazily renders it to a @samp{.md} file if needed, then opens the rendered buffer in @code{agent-log-mode} (@ref{@code{agent-log-mode}}).
 
-The command @code{agent-log-open-latest} opens the most recent session directly, without prompting.  This is convenient when you want to review the last conversation you had with Claude Code.
+The command @code{agent-log-open-latest} opens the most recent session directly, without prompting.  This is convenient when you want to review the last conversation you had with a coding agent.
 
 The command @code{agent-log-open-file} opens a specific JSONL file by path.  It prompts for a file path interactively.  This is useful for automation, for opening session files you found via the filesystem, or when you know the exact file you want.
 
 The command @code{agent-log-open-session} opens a session by its ID@.  It prompts for the session ID interactively.
 
-The command @code{agent-log-open-session-at-point} opens the log for the Claude Code session running in the current buffer.  The current buffer must be a Claude Code terminal buffer (from the @samp{claude-code} package).  The command reads the status file that Claude Code writes to @samp{/tmp/claude-code-status/} and uses the @samp{transcript_path} field to locate the exact JSONL file for the session.  This uniquely identifies the session even when multiple sessions (including branches created with @code{/branch}) share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching @samp{history.jsonl}.  This lets you quickly jump from an active Claude Code session to its rendered log.
+The command @code{agent-log-open-session-at-point} opens the log for the Claude Code session running in the current buffer.  This command is defined in @samp{agent-log-claude.el} and requires the @samp{claude-code} package; the current buffer must be a Claude Code terminal buffer.  The command reads the status file that Claude Code writes to @samp{/tmp/claude-code-status/} and uses the @samp{transcript_path} field to locate the exact JSONL file for the session.  This uniquely identifies the session even when multiple sessions (including branches created with @code{/branch}) share the same project directory.  If the status file is unavailable, it falls back to the most recently modified JSONL file in the project's session directory, or to searching @samp{history.jsonl}.  This lets you quickly jump from an active Claude Code session to its rendered log.
 
 @node Rendered directory
 @section Rendered directory
@@ -445,9 +445,9 @@ Summaries are persisted in the index file, so they survive across Emacs sessions
 
 @vindex agent-log-sync-on-session-end
 
-When @code{agent-log-sync-on-session-end} is non-nil, @code{agent-log-sync-all} and @code{agent-log-summarize-sessions} run automatically each time a Claude Code session terminates.  This requires the @samp{claude-code} package and a @samp{Stop} hook configured in Claude Code's settings (see the @samp{claude-code} documentation for hook setup).
+When @code{agent-log-sync-on-session-end} is non-nil, @code{agent-log-sync-all} and @code{agent-log-summarize-sessions} run automatically each time a Claude Code session terminates.  This requires the @samp{claude-code} package and a @samp{Stop} hook configured in Claude Code's settings (see the @samp{claude-code} documentation for hook setup).  The hook handler (@code{agent-log-claude--session-end-handler}) is defined in @samp{agent-log-claude.el} and is installed via @code{eval-after-load} when the defcustom is set before the backend is loaded.
 
-Sessions with a live Claude Code process are excluded from summarization by session ID (via @samp{claude-code-extras}), so in-progress conversations are never summarized prematurely.  If summarization is already running when another session ends, the in-progress batch continues undisturbed.
+Sessions with a live agent process are excluded from summarization by session ID@.  Each backend's @code{agent-log--active-session-ids} method provides the IDs of currently running sessions.  If summarization is already running when another session ends, the in-progress batch continues undisturbed.
 
 @node Session rename
 @section Session rename
@@ -459,7 +459,7 @@ The user option @code{agent-log-auto-rename-sessions} controls whether sessions 
 
 The default value is @code{nil}.  Set it to @code{t} if you want session names to stay in sync with summaries automatically.
 
-The command @code{agent-log-rename-sessions} renames all sessions that lack a custom title.  For each session that has a one-line summary in the index but no @samp{custom-title} entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (@samp{C-u}), it overwrites existing custom titles as well, which is useful after changing the title format.
+The command @code{agent-log-rename-sessions} renames all sessions that lack a custom title.  This command is defined in @samp{agent-log-claude.el} because custom-title entries are a Claude Code-specific JSONL convention.  For each session that has a one-line summary in the index but no @samp{custom-title} entry in its JSONL file, the command writes the summary directly as the custom title.  With a prefix argument (@samp{C-u}), it overwrites existing custom titles as well, which is useful after changing the title format.
 
 This is a purely local, offline operation — no API calls are made.  Sessions must be summarized first via @code{agent-log-summarize-sessions} (@ref{Summary generation}).  Sessions that already have a custom title (e.g. from Claude Code's @samp{/rename} command) are skipped.
 
@@ -490,9 +490,7 @@ Before stage 2, the estimated token cost is compared against @code{agent-log-sea
 
 @findex agent-log-resume-session
 
-The command @code{agent-log-resume-session} resumes the Claude Code session displayed in the current buffer.  It requires the @samp{claude-code} package.  The command extracts the session ID from the buffer (either from the buffer-local variable or from the front-matter comment) and passes it to Claude Code with the @samp{--resume} flag.
-
-If the session's project directory can be determined (from the buffer-local variable or from @samp{history.jsonl}), Claude Code is started in that directory.  The keybinding is @samp{r} in @code{agent-log-mode}.
+The command @code{agent-log-resume-session} resumes the session displayed in the current buffer in the coding agent.  The command extracts the session ID from the buffer (either from the buffer-local variable or from the front-matter comment) and dispatches to the buffer's backend via the @code{agent-log--resume-session} generic function.  For Claude Code sessions, this requires the @samp{claude-code} package and passes the session ID with the @samp{--resume} flag, starting in the session's project directory when possible.  The keybinding is @samp{r} in @code{agent-log-mode}.
 
 @node @code{agent-log-mode}
 @chapter @code{agent-log-mode}
@@ -534,7 +532,7 @@ The full keymap is:
 @tab Copy the current turn to the kill ring
 @item @samp{r}
 @tab @code{agent-log-resume-session}
-@tab Resume the session in Claude Code
+@tab Resume the session in the coding agent
 @item @samp{?}
 @tab @code{agent-log-menu}
 @tab Open the transient menu
@@ -576,7 +574,7 @@ The keymap is minimal:
 
 The command @code{agent-log-menu} opens a transient menu that groups all @code{agent-log} commands into four columns: Open, Sync & AI, Navigate (shown only inside a @code{agent-log-mode} buffer), and Settings.  The keybinding is @samp{?} in @code{agent-log-mode}.  The menu is also available globally via its autoload, so you can bind it to a key of your choice outside of @code{agent-log-mode}.
 
-The Open column includes @code{agent-log-resume-session} (bound to @samp{r}), which resumes the session displayed in the current buffer in Claude Code.  The Sync & AI column includes the @code{agent-log-search} command, bound to @samp{/}.
+The Open column includes @code{agent-log-resume-session} (bound to @samp{r}), which resumes the session displayed in the current buffer in the coding agent.  The Sync & AI column includes the @code{agent-log-search} command, bound to @samp{/}.
 
 The Settings column displays the current value of each option (e.g., @code{collapsed}, @code{on}, @code{off}) highlighted with the @code{transient-value} face, matching the convention used by @samp{magit} and other transient-based menus.  In the Navigate column, @samp{G} refreshes the buffer; in the Settings column, @samp{g} toggles grouping by project.
 
@@ -598,12 +596,12 @@ The package uses a generic interface to support multiple AI coding agents.  The 
 
 Backend files are loaded lazily.  When a backend is first accessed (e.g. during @code{agent-log-browse-sessions}), the package calls @code{require} on the backend's feature name and the backend registers a singleton instance in a global registry.  The registry maps backend key symbols to struct instances, so all dispatch goes through the struct's type.
 
-The rendering pipeline, session browser, live update mechanism, AI summaries, and AI search all operate on a normalized intermediate representation.  Each backend's @code{agent-log--normalize-entries} method converts its native JSONL format into canonical plists that the generic code expects.  This means the core of the package is backend-agnostic: adding a new backend requires only implementing the generic functions, with no changes to the core file.
+The rendering pipeline, session browser, live update mechanism, AI summaries, and AI search all operate on a normalized intermediate representation.  Each backend's @code{agent-log--normalize-entries} method converts its native JSONL format into canonical plists that the generic code expects.  Core functions such as @code{agent-log--render-to-file} and @code{agent-log--extract-conversation-text} receive a backend instance and thread it through to generic dispatch points (conversation filtering, entry classification, tool summarization, text extraction).  The convenience function @code{agent-log--read-all-sessions} returns sessions from the first active backend; individual buffers store their backend in the buffer-local variable @code{agent-log--backend}, set when a session is opened.  This means the core of the package is backend-agnostic: adding a new backend requires only implementing the generic functions, with no changes to the core file.
 
 @node Data sources
 @section Data sources
 
-Claude Code stores conversation data in two places:
+The Claude Code backend reads conversation data from two places:
 
 @enumerate
 @item
@@ -634,7 +632,7 @@ Each @samp{.md} file contains HTML-comment front matter (session ID, source path
 @node Rendering pipeline
 @section Rendering pipeline
 
-Each JSONL entry has a @code{type} field: @code{user}, @code{assistant}, @code{progress}, @code{system}, or @code{file-history-snapshot}.  The package filters to @code{user} and @code{assistant} entries, further excluding system-generated messages (entries whose content starts with known XML tags such as @samp{<local-command-stdout>} or @samp{<command-name>}).
+Each JSONL entry has a @code{type} field: @code{user}, @code{assistant}, @code{progress}, @code{system}, or @code{file-history-snapshot}.  The package filters entries via the backend's @code{agent-log--filter-conversation} and @code{agent-log--conversation-entry-p} methods, which select @code{user} and @code{assistant} entries while excluding system-generated messages.  For Claude Code, system entries are those whose content starts with known XML tags such as @samp{<local-command-stdout>} or @samp{<command-name>}.
 
 Filtered entries are rendered as Markdown with @samp{##} headings for conversation turns and @samp{####} headings for tool calls and thinking blocks.  User turns show any text content followed by tool results.  Assistant turns show thinking blocks, text content, and tool-use summaries.
 
@@ -657,7 +655,7 @@ When @code{agent-log-live-update} is non-@code{nil} and a rendered buffer is ope
 @node No sessions found
 @section No sessions found
 
-Ensure that @code{agent-log-directory} points to the correct Claude Code configuration directory (@ref{Directory configuration}).  The package reads @samp{history.jsonl} in that directory and looks for session files under @samp{projects/}.
+Ensure that @code{agent-log-directory} points to the correct configuration directory (@ref{Directory configuration}).  The package reads @samp{history.jsonl} in that directory and looks for session files under @samp{projects/}.
 
 @node Rendered files not updating
 @section Rendered files not updating

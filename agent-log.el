@@ -176,10 +176,18 @@ Returns nil if KEY is not in `agent-log-backends'."
     (delq nil (mapcar #'agent-log--get-backend keys))))
 
 (defun agent-log--read-all-sessions ()
-  "Return sessions from the first active backend.
-In future versions, this will merge sessions from all active backends."
-  (when-let* ((backend (car (agent-log--active-backend-instances))))
-    (agent-log--read-sessions backend)))
+  "Return merged sessions from all active backends, sorted most-recent-first."
+  (let ((all '()))
+    (dolist (backend (agent-log--active-backend-instances))
+      (condition-case err
+          (setq all (nconc all (agent-log--read-sessions backend)))
+        (error (message "agent-log: failed to read sessions from %s: %s"
+                        (agent-log-backend-name backend)
+                        (error-message-string err)))))
+    (sort all (lambda (a b)
+                (agent-log--timestamp>
+                 (plist-get (cdr a) :timestamp)
+                 (plist-get (cdr b) :timestamp))))))
 
 (defun agent-log--find-session-file-any (session-id)
   "Try all active backends to find SESSION-ID, return file path or nil."
@@ -414,6 +422,16 @@ Used when following links in the result buffer.")
   "Return the buffer-local backend, or the first active backend."
   (or agent-log--backend (car (agent-log--active-backend-instances))))
 
+(defun agent-log--backend-for-file (file)
+  "Return the backend whose directory contains FILE, or the default backend."
+  (let ((file (expand-file-name file)))
+    (or (cl-loop for backend in (agent-log--active-backend-instances)
+                 when (let ((dir (expand-file-name
+                                  (agent-log-backend-directory backend))))
+                        (string-prefix-p dir file))
+                 return backend)
+        (agent-log--default-backend))))
+
 ;;;;; Entry points
 
 ;;;###autoload
@@ -432,9 +450,9 @@ a project, then for a session within that project."
   "Open and render the JSONL session log at FILE."
   (interactive "fJSONL file: ")
   (let* ((file (expand-file-name file))
-         (backend (agent-log--default-backend))
+         (backend (agent-log--backend-for-file file))
          (session-id (file-name-sans-extension (file-name-nondirectory file)))
-         (entries (agent-log--parse-jsonl-file file))
+         (entries (agent-log--parse-and-normalize file backend))
          (first-msg (agent-log--find-first-message entries))
          (progress (agent-log--find-progress-entry entries))
          (ts-iso (when first-msg (plist-get first-msg :timestamp)))
@@ -682,7 +700,7 @@ Returns (RENDERED-PATH . JSONL-SIZE)."
   (let* ((jsonl-file (plist-get metadata :file))
          (backend (or (plist-get metadata :backend)
                       (agent-log--default-backend)))
-         (entries (agent-log--parse-jsonl-file jsonl-file))
+         (entries (agent-log--parse-and-normalize jsonl-file backend))
          (conversation (if backend
                            (agent-log--filter-conversation backend entries)
                          entries))
@@ -902,6 +920,17 @@ Malformed lines are silently skipped."
                       (error nil)))
                   lines))))
 
+(defun agent-log--parse-and-normalize (file &optional backend)
+  "Parse FILE as JSONL and normalize entries using BACKEND.
+When BACKEND is nil, uses `agent-log--default-backend'.
+Normalization converts backend-specific formats to the canonical
+agent-log format (e.g. Codex envelopes to flat entries)."
+  (let ((entries (agent-log--parse-jsonl-file file))
+        (backend (or backend (agent-log--default-backend))))
+    (if backend
+        (agent-log--normalize-entries backend entries)
+      entries)))
+
 (defun agent-log--read-file-lines (file)
   "Read FILE and return a list of non-empty lines."
   (with-temp-buffer
@@ -929,7 +958,7 @@ Malformed lines are silently skipped."
 (defun agent-log--render-full ()
   "Render the full JSONL file into the current buffer."
   (let* ((backend agent-log--backend)
-         (entries (agent-log--parse-jsonl-file agent-log--source-file))
+         (entries (agent-log--parse-and-normalize agent-log--source-file backend))
          (conversation (if backend
                            (agent-log--filter-conversation backend entries)
                          entries)))
@@ -1292,23 +1321,29 @@ If AT-END is non-nil, scroll to show new content."
 
 (defun agent-log--append-rendered-line (line)
   "Parse LINE as JSON and append its rendering if it is a conversation entry.
-Appends to both the buffer and the rendered .md file on disk."
-  (when-let* ((entry (agent-log--try-parse-json line))
+Appends to both the buffer and the rendered .md file on disk.
+For backends that use an envelope format (e.g. Codex), normalizes the
+single entry before checking whether it is a conversation entry."
+  (when-let* ((raw (agent-log--try-parse-json line))
               (backend agent-log--backend))
-    (when (agent-log--conversation-entry-p backend entry)
-      (let ((rendered (agent-log--render-entry entry backend))
-            (inhibit-read-only t))
-        (when agent-log--rendered-file
-          (agent-log--append-to-file agent-log--rendered-file rendered))
-        ;; Sync modtime BEFORE buffer insert to prevent the
-        ;; supersession check in `prepare_to_modify_buffer'.
-        (set-visited-file-modtime)
-        (save-excursion
-          (goto-char (point-max))
-          (insert rendered)
-          (agent-log--collapse-region
-           (- (point-max) (length rendered)) (point-max)))
-        (set-buffer-modified-p nil)))))
+    ;; Normalize: for enveloped formats, convert the single entry.
+    ;; The result is a list; for flat formats (Claude), wrap the raw entry.
+    (let ((normalized (agent-log--normalize-entries backend (list raw))))
+      (dolist (entry normalized)
+        (when (agent-log--conversation-entry-p backend entry)
+          (let ((rendered (agent-log--render-entry entry backend))
+                (inhibit-read-only t))
+            (when agent-log--rendered-file
+              (agent-log--append-to-file agent-log--rendered-file rendered))
+            ;; Sync modtime BEFORE buffer insert to prevent the
+            ;; supersession check in `prepare_to_modify_buffer'.
+            (set-visited-file-modtime)
+            (save-excursion
+              (goto-char (point-max))
+              (insert rendered)
+              (agent-log--collapse-region
+               (- (point-max) (length rendered)) (point-max)))
+            (set-buffer-modified-p nil)))))))
 
 (defun agent-log--try-parse-json (line)
   "Parse LINE as JSON, returning nil if it is not valid JSON."
@@ -1706,8 +1741,9 @@ nothing."
              (meta (cdr session))
              (jsonl-file (plist-get meta :file)))
         (condition-case err
-            (let* ((entries (agent-log--parse-jsonl-file jsonl-file))
-                   (text (agent-log--extract-conversation-text entries)))
+            (let* ((backend (plist-get meta :backend))
+                   (entries (agent-log--parse-and-normalize jsonl-file backend))
+                   (text (agent-log--extract-conversation-text entries backend)))
               (if (string-empty-p (string-trim text))
                   (progn
                     (agent-log--index-update-props
@@ -2359,7 +2395,7 @@ full session list and index for filtering."
 
 ;;;###autoload (autoload 'agent-log-menu "agent-log" nil t)
 (transient-define-prefix agent-log-menu ()
-  "Transient menu for Claude Log commands."
+  "Transient menu for Agent Log commands."
   ["Open"
    ("b" "Browse sessions" agent-log-browse-sessions)
    ("l" "Open latest" agent-log-open-latest)
