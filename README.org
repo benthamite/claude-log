@@ -9,6 +9,7 @@
 #+texinfo_dir_category: Emacs misc features
 #+texinfo_dir_title: Agent-Log: (agent-log)
 #+texinfo_dir_desc: Browse AI coding agent session logs in Emacs
+#+texinfo_header: @c AUTO-GENERATED from README.org via ox-texinfo — do not edit manually.
 
 This manual describes the features and customization options for the =agent-log= package (=agent-log.el= and its backend files).
 
